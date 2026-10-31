@@ -287,6 +287,20 @@ table.t{width:100%;border-collapse:collapse;font-size:14px}
 .p-top img{height:44px}
 .p-wrap{max-width:920px;margin:0 auto;padding:0 16px 40px;display:flex;flex-direction:column;gap:16px;width:100%}
 
+
+/* dokumen di HP: kop & cap LUNAS tidak saling menimpa */
+@media(max-width:560px){
+  .modal-b{padding:12px}
+  .modal .inv{padding:16px}
+  .modal .inv-h{flex-wrap:wrap;gap:10px}
+  .modal .inv-h img{width:84px}
+  .modal .inv-h > div:nth-child(3){flex-basis:100%;text-align:left!important;background:var(--pri-50);border-radius:10px;padding:6px 10px}
+  .modal .inv .stamp{position:static;display:inline-block;transform:rotate(-4deg);margin:2px 0 12px;font-size:16px;background:none}
+  .modal .inv td{word-break:break-word}
+  .modal-f .btn{flex:1 1 auto}
+}
+.img-render .inv{border:0;border-radius:0}
+
 /* print */
 @media print{
   body *{visibility:hidden}
@@ -333,8 +347,8 @@ const PUBLIC_KEYS = ['namaLembaga', 'tagline', 'alamat', 'noWa', 'rekening', 'ca
 const DEFAULT_SETTINGS = {
   namaLembaga: 'AHE AKSARA',
   tagline: 'Bimbingan Belajar',
-  alamat: 'Alamat bimbel',
-  noWa: '081234567890',
+  alamat: 'Jl. Perhutani No. 29, Kec. Bandar, Kab. Batang',
+  noWa: '085290691800',
   rekening: 'BNI 2005121277 a.n. Eka Puspitasari / QRIS',
   cabang: 'Bandar, Blado, Kambangan',
   kelas: 'PAUD, TK A, TK B, Kelas 1, Kelas 2, Kelas 3, Kelas 4, Kelas 5, Kelas 6, SMP',
@@ -776,6 +790,59 @@ async function exportXLSX(name, sheets) {
   }
 }
 
+/* ---------------- kirim dokumen sebagai GAMBAR / PDF (share ke WhatsApp) ---------------- */
+const _libs = {};
+function loadLib(key, url, get) {
+  if (get()) return Promise.resolve(get());
+  if (_libs[key]) return _libs[key];
+  return _libs[key] = new Promise((ok, ko) => { const s = document.createElement('script'); s.src = url; s.onload = () => ok(get()); s.onerror = () => { _libs[key] = null; ko(new Error('Gagal memuat modul')); }; document.head.appendChild(s); });
+}
+const loadH2C = () => loadLib('h2c', 'https://cdnjs.cloudflare.com/ajax/libs/html2canvas/1.4.1/html2canvas.min.js', () => window.html2canvas);
+const loadPDF = () => loadLib('pdf', 'https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js', () => window.jspdf && window.jspdf.jsPDF);
+const IMG = { blob: null, pdf: null, name: '', busy: null, wa: '', text: '' };
+/* dipanggil saat dokumen dibuka: gambar & PDF disiapkan lebih dulu agar tombol share bisa langsung membuka menu Share (syarat iPhone) */
+function prepImage(name, wa, text) {
+  Object.assign(IMG, { blob: null, pdf: null, name: String(name).replace(/[^\w-]+/g, '-'), wa: wa || '', text: text || '' });
+  const src = $('#modal .inv'); if (!src) return;
+  const job = IMG.busy = (async () => {
+    const h2c = await loadH2C();
+    const box = document.createElement('div'); box.className = 'img-render';
+    box.style.cssText = 'position:fixed;left:-10000px;top:0;width:640px;background:#fff';
+    const clone = src.cloneNode(true); box.appendChild(clone); document.body.appendChild(box);
+    try { if (document.fonts && document.fonts.ready) await document.fonts.ready; return await h2c(clone, { scale: 2, backgroundColor: '#ffffff', logging: false }); }
+    finally { box.remove(); }
+  })();
+  const setBtn = (id, html, ok) => { const b = $('#' + id); if (b) { b.disabled = !ok; b.innerHTML = html; } };
+  job.then(c => new Promise(r => c.toBlob(r, 'image/png'))).then(b => { if (IMG.busy !== job) return; IMG.blob = b; setBtn('imgBtn', ic('wa') + ' Kirim Gambar', true); })
+     .catch(() => setBtn('imgBtn', 'Gambar tidak tersedia'));
+  Promise.all([job, loadPDF()]).then(([c, JsPDF]) => {
+    if (IMG.busy !== job) return;
+    const m = 8, w = 148, h = Math.round(w * c.height / c.width);           /* lebar A5, tinggi mengikuti isi */
+    const doc = new JsPDF({ unit: 'mm', format: [w + 2 * m, h + 2 * m], orientation: 'portrait', compress: true });
+    doc.addImage(c.toDataURL('image/jpeg', 0.92), 'JPEG', m, m, w, h);
+    doc.setProperties({ title: IMG.name });
+    IMG.pdf = doc.output('blob'); setBtn('pdfBtn', ic('file') + ' Kirim PDF', true);
+  }).catch(() => setBtn('pdfBtn', 'PDF tidak tersedia'));
+}
+const imgBtn = () => `<button class="btn wa" id="pdfBtn" disabled onclick="sendDoc('pdf')">Menyiapkan PDF…</button><button class="btn wa" id="imgBtn" disabled onclick="sendDoc('img')">Menyiapkan gambar…</button>`;
+async function sendDoc(kind) {
+  const isPdf = kind === 'pdf', blob = isPdf ? IMG.pdf : IMG.blob;
+  if (!blob) return toast((isPdf ? 'PDF' : 'Gambar') + ' belum siap, coba sebentar lagi', true);
+  const file = new File([blob], (IMG.name || 'dokumen') + (isPdf ? '.pdf' : '.png'), { type: isPdf ? 'application/pdf' : 'image/png' });
+  if (navigator.canShare && navigator.canShare({ files: [file] })) {
+    try { await navigator.share({ files: [file], text: IMG.text }); return; }
+    catch (e) { if (e && e.name === 'AbortError') return; }
+  }
+  /* laptop / browser tanpa Share: gambar disalin (tempel Ctrl+V), PDF diunduh (lampirkan sebagai Dokumen) */
+  let copied = false;
+  if (!isPdf) try { await navigator.clipboard.write([new ClipboardItem({ 'image/png': blob })]); copied = true; } catch (e) {}
+  if (!copied) { const a = document.createElement('a'); a.href = URL.createObjectURL(blob); a.download = file.name; document.body.appendChild(a); a.click(); a.remove(); }
+  const btn = $(isPdf ? '#pdfBtn' : '#imgBtn');
+  if (btn && waNum(IMG.wa)) { btn.innerHTML = ic('wa') + ' Buka chat WhatsApp'; btn.onclick = () => window.open(waLink(IMG.wa, IMG.text), '_blank'); }
+  toast(copied ? 'Gambar disalin ✓ Buka chat WhatsApp lalu tempel (Ctrl+V)' : isPdf ? 'PDF diunduh ✓ Di chat WhatsApp klik 📎 → Dokumen → pilih file PDF' : 'Gambar diunduh ✓ Lampirkan di chat WhatsApp', false);
+}
+const sendImage = () => sendDoc('img');
+
 /* ---------------- UI primitives ---------------- */
 let toastT;
 function toast(msg, err) {
@@ -941,6 +1008,7 @@ function stokOf(itemId, cab) {
 }
 
 /* ---------- dokumen: kuitansi, tagihan, WA ---------- */
+const sapaOrtu = s => 'Bapak/Ibu ' + String(s.ortu || s.ibu || s.ayah || '').replace(/^(bapak|ibu|bpk|bu|pak|bunda|ayah)\.?\s+/i, '');
 const sigName = () => `-${String(S.settings.namaLembaga || 'AHE AKSARA').toUpperCase()}-`;
 function kasLineLabel(k) {
   if (k.kategori === 'SPP') return `SPP ${progById(k.programId).nama} — ${fmtPeriod(k.periode)}${k.metode === 'Dibebaskan' ? ' (dibebaskan)' : ''}`;
@@ -972,7 +1040,7 @@ function kuitansiHtml(no) {
 function kuitansiWa(no) {
   const rows = D('Kas').filter(k => k.noKuitansi === no && !k.batal); if (!rows.length) return '';
   const k0 = rows[0], s = siswaById(k0.siswaId);
-  return `Assalamualaikum Wr. Wb\nBapak/Ibu ${s.ortu || ''}\nBerikut kami sampaikan informasi Kuitansi Pembayaran Ananda ${s.nama}\n\n📌 *KUITANSI PEMBAYARAN*\nNo. ${no}\n\nNama : ${s.nama}\nProgram Belajar : ${progNamesOf(s.id)}\nTanggal Pembayaran : ${fmtDateLong(k0.tanggal)}\nMetode Pembayaran : ${k0.metode}\nRincian Pembayaran :\n${rows.map(k => `• ${kasLineLabel(k)}: ${rp(k.nominal)}`).join('\n')}\n*Total : ${rp(sum(rows, k => k.nominal))}*\n\n_Terima kasih atas pembayaran Bapak/Ibu._\n\nWassalamualaikum Wr. Wb\n${sigName()}`;
+  return `Assalamualaikum Wr. Wb\n${sapaOrtu(s)}\nBerikut kami sampaikan informasi Kuitansi Pembayaran Ananda ${s.nama}\n\n📌 *KUITANSI PEMBAYARAN*\nNo. ${no}\n\nNama : ${s.nama}\nProgram Belajar : ${progNamesOf(s.id)}\nTanggal Pembayaran : ${fmtDateLong(k0.tanggal)}\nMetode Pembayaran : ${k0.metode}\nRincian Pembayaran :\n${rows.map(k => `• ${kasLineLabel(k)}: ${rp(k.nominal)}`).join('\n')}\n*Total : ${rp(sum(rows, k => k.nominal))}*\n\n_Terima kasih atas pembayaran Bapak/Ibu._\n\nWassalamualaikum Wr. Wb\n${sigName()}`;
 }
 function tagihanItems(sid) {
   const bills = arrearsOf(sid).concat(billsOfSiswa(sid, addMonths(thisPeriod(), 1), 0).filter(b => b.open && b.due <= addDays(todayStr(), +S.settings.hariPengingat || 7)));
@@ -1004,7 +1072,7 @@ function tagihanWa(sid) {
   const periods = [...new Set(t.bills.map(b => b.p))].sort();
   const due = t.bills.length ? t.bills.map(b => b.due).sort()[0] : '';
   const rinci = t.bills.map(b => `• SPP ${progById(b.pid).nama} (${fmtPeriod(b.p)}): ${rp(b.sisa)}`).concat(t.jual.map(x => `• ${x.j.nama}${x.j.level ? ' Lv ' + x.j.level : ''}: ${rp(x.sisa)}`));
-  return `Assalamu'alaikum Wr. Wb\nBapak/Ibu ${s.ortu || ''}\nMohon izin menyampaikan informasi tagihan pembayaran dengan rincian berikut:\n\nNama : ${s.nama}\nPeriode Pembayaran : ${periods.map(fmtPeriod).join(', ') || '-'}\n${rinci.length > 1 ? 'Rincian :\n' + rinci.join('\n') + '\n' : ''}Total Pembayaran : *${rp(t.total)}*\n${due ? 'Jatuh Tempo : ' + fmtDateLong(due) + '\n' : ''}\nPembayaran ke ${st.rekening || '-'}. Konfirmasi jika sudah melakukan pembayaran.\n\nTerimakasih\nWassalamualaikum Wr. Wb\n${sigName()}`;
+  return `Assalamu'alaikum Wr. Wb\n${sapaOrtu(s)}\nMohon izin menyampaikan informasi tagihan pembayaran dengan rincian berikut:\n\nNama : ${s.nama}\nPeriode Pembayaran : ${periods.map(fmtPeriod).join(', ') || '-'}\n${rinci.length > 1 ? 'Rincian :\n' + rinci.join('\n') + '\n' : ''}Total Pembayaran : *${rp(t.total)}*\n${due ? 'Jatuh Tempo : ' + fmtDateLong(due) + '\n' : ''}\nPembayaran ke ${st.rekening || '-'}. Konfirmasi jika sudah melakukan pembayaran.\n\nTerimakasih\nWassalamualaikum Wr. Wb\n${sigName()}`;
 }
 
 /* =========================================================
@@ -1114,7 +1182,7 @@ const Mock = (() => {
   /* ---------- data contoh ---------- */
   function seed() {
     const T = {}; Object.keys(SCHEMA).forEach(t => T[t] = []);
-    T.Pengaturan = Object.assign({}, DEFAULT_SETTINGS, { alamat: 'Jl. Pendidikan No. 8, Kendal', noWa: '081234567890' });
+    T.Pengaturan = Object.assign({}, DEFAULT_SETTINGS);
     T.Users = [
       { id: 'U01', username: 'admin', passwordHash: 'p:aheaksara123', nama: 'Bu Eka (Pemilik)', akses: 'Pemilik', cabang: '', keuangan: 'Ya', status: 'Aktif' },
       { id: 'U02', username: 'blado', passwordHash: 'p:blado123', nama: 'Admin Blado', akses: 'Admin', cabang: 'Blado', keuangan: 'Tidak', status: 'Aktif' }
@@ -1572,7 +1640,7 @@ async function saveSiswa(id) {
 }
 function waAkses(id) {
   const s = siswaById(id), st = S.settings;
-  openWa(s.waOrtu, `Assalamu'alaikum Wr. Wb\nBapak/Ibu ${s.ortu || ''},\n\nBerikut akses *Portal Orang Tua ${st.namaLembaga}* untuk ananda ${s.nama}:\n${st.portalUrl ? '\nLink: ' + st.portalUrl + '\n' : ''}\nID Siswa: *${s.id}*\nKode Akses: *${s.kodeOrtu}*\n\nDi portal ini Bapak/Ibu dapat melihat hasil belajar, catatan perkembangan, kehadiran, serta status pembayaran ananda.\n\nTerimakasih\nWassalamualaikum Wr. Wb\n${sigName()}`);
+  openWa(s.waOrtu, `Assalamu'alaikum Wr. Wb\n${sapaOrtu(s)},\n\nBerikut akses *Portal Orang Tua ${st.namaLembaga}* untuk ananda ${s.nama}:\n${st.portalUrl ? '\nLink: ' + st.portalUrl + '\n' : ''}\nID Siswa: *${s.id}*\nKode Akses: *${s.kodeOrtu}*\n\nDi portal ini Bapak/Ibu dapat melihat hasil belajar, catatan perkembangan, kehadiran, serta status pembayaran ananda.\n\nTerimakasih\nWassalamualaikum Wr. Wb\n${sigName()}`);
 }
 function delSiswa(id) {
   confirmBox(`Hapus permanen <b>${esc(siswaById(id).nama)}</b>? Disarankan ubah status menjadi <b>Keluar</b> agar riwayat tetap rapi.`, async () => { try { await removeRow('Siswa', id); closeModal(); toast('Siswa dihapus'); renderAdmin(); } catch (e) { toast(e.message, true); } });
@@ -1831,7 +1899,7 @@ function sppTagihan() {
   const all = billsOfPeriod(p).filter(b => !pf || b.pid === pf);
   let rows = flt === 'open' ? all.filter(b => b.open) : flt === 'lunas' ? all.filter(b => !b.open) : all;
   rows.sort((a, b) => (+!a.open - +!b.open) || byName(siswaById(a.sid), siswaById(b.sid)));
-  const tot = sum(all, b => b.tag), paid = sum(all, b => b.st === 'Dibebaskan' ? 0 : Math.min(b.bayar, b.tag)), open = all.filter(b => b.open);
+  const tot = sum(all, b => b.st === 'Dibebaskan' ? 0 : b.tag), paid = sum(all, b => b.st === 'Dibebaskan' ? 0 : Math.min(b.bayar, b.tag)), open = all.filter(b => b.open);
   return `<div class="grid g4">
     <div class="stat bg-pri"><span class="lbl">Total tagihan ${fmtPeriod(p)}</span><span class="val num" style="font-size:22px">${rp(tot)}</span><span class="sub">${all.length} tagihan · ${esc(cabLabel())}</span></div>
     <div class="stat bg-ok"><span class="lbl">Sudah dibayar</span><span class="val num" style="font-size:22px">${rp(paid)}</span><span class="sub">${all.filter(b => b.st === 'Lunas').length} lunas</span></div>
@@ -1966,11 +2034,13 @@ async function saveBayar(sid) {
 function showKuitansi(no) {
   const k = D('Kas').find(x => x.noKuitansi === no); if (!k) return;
   const s = siswaById(k.siswaId);
-  modal('Kuitansi Pembayaran', kuitansiHtml(no), `${S.role === 'admin' ? `<button class="btn ghost" style="margin-right:auto" onclick="batalKuitansi('${no}')">${ic('ban')} Batalkan</button>` : ''}<button class="btn ghost" onclick="printHtml($('#modal .inv').outerHTML,'Kuitansi ${jsq(no)}')">${ic('print')} Cetak / PDF</button><button class="btn wa" onclick="openWa('${s.waOrtu}',kuitansiWa('${no}'))">${ic('wa')} Kirim WA</button>`, true);
+  modal('Kuitansi Pembayaran', kuitansiHtml(no), `${S.role === 'admin' ? `<button class="btn ghost" style="margin-right:auto" onclick="batalKuitansi('${no}')">${ic('ban')} Batalkan</button>` : ''}<button class="btn ghost" onclick="printHtml($('#modal .inv').outerHTML,'Kuitansi ${jsq(no)}')">${ic('print')} Cetak / PDF</button>${S.role === 'admin' ? `<button class="btn ghost" onclick="openWa('${s.waOrtu}',kuitansiWa('${no}'))">${ic('wa')} Kirim Teks</button>` : ''}${imgBtn()}`, true);
+  prepImage('Kuitansi-' + s.nama + '-' + no, S.role === 'admin' ? s.waOrtu : S.settings.noWa, S.role === 'admin' ? kuitansiWa(no) : `Kuitansi pembayaran ${s.nama} — ${S.settings.namaLembaga}`);
 }
 function showTagihan(sid) {
   const s = siswaById(sid);
-  modal('Tagihan Pembayaran', tagihanHtml(sid), `<button class="btn ghost" onclick="printHtml($('#modal .inv').outerHTML,'Tagihan ${jsq(s.nama)}')">${ic('print')} Cetak / PDF</button><button class="btn wa" onclick="openWa('${s.waOrtu}',tagihanWa('${sid}'))">${ic('wa')} Kirim WA</button><button class="btn green" onclick="formBayar('${sid}')">Terima Bayar</button>`, true);
+  modal('Tagihan Pembayaran', tagihanHtml(sid), `<button class="btn ghost" onclick="printHtml($('#modal .inv').outerHTML,'Tagihan ${jsq(s.nama)}')">${ic('print')} Cetak / PDF</button><button class="btn ghost" onclick="openWa('${s.waOrtu}',tagihanWa('${sid}'))">${ic('wa')} Kirim Teks</button>${imgBtn()}<button class="btn green" onclick="formBayar('${sid}')">Terima Bayar</button>`, true);
+  prepImage('Tagihan-' + s.nama, s.waOrtu, tagihanWa(sid));
 }
 const batalStamp = r => `${r} · ${S.user.nama} · ${todayStr()}`;
 function batalKuitansi(no) {
@@ -2452,7 +2522,7 @@ function slipHtml(g, p, c) {
     <div style="border-radius:12px;background:var(--pri-50);padding:14px;margin:14px 0;display:flex;align-items:center"><b style="flex:1">Total diterima</b><div class="tot num">${rp(c.total)}</div></div>
     <div class="small muted" style="text-align:right">${c.paid ? 'Dibayar ' + fmtDateLong(c.rec.tanggalBayar) : 'Dicetak ' + fmtDateLong(todayStr())}</div></div>`;
 }
-function slipGaji(gid, p) { const g = guruById(gid), c = gajiCalc(g, p); modal('Slip Gaji', slipHtml(g, p, c), `<button class="btn ghost" onclick="printHtml($('#modal .inv').outerHTML,'Slip Gaji ${jsq(g.nama)}')">${ic('print')} Cetak / PDF</button><button class="btn wa" onclick="waSlip('${gid}','${p}')">${ic('wa')} Kirim WA</button>`, true); }
+function slipGaji(gid, p) { const g = guruById(gid), c = gajiCalc(g, p); modal('Slip Gaji', slipHtml(g, p, c), `<button class="btn ghost" onclick="printHtml($('#modal .inv').outerHTML,'Slip Gaji ${jsq(g.nama)}')">${ic('print')} Cetak / PDF</button><button class="btn ghost" onclick="waSlip('${gid}','${p}')">${ic('wa')} Kirim Teks</button>${imgBtn()}`, true); prepImage('Slip-Gaji-' + g.nama + '-' + p, g.wa, `Slip gaji ${g.nama} — ${fmtPeriod(p)}`); }
 function waSlip(gid, p) { const g = guruById(gid), c = gajiCalc(g, p); openWa(g.wa, `Assalamu'alaikum ${g.nama},\n\nBerikut rincian gaji *${fmtPeriod(p)}* di ${S.settings.namaLembaga}:\n\nKehadiran: ${c.hadir} hari · ${c.meet} pertemuan · ${c.jam} jam\nDasar hitung: ${c.tipe} (${c.basis})\nBonus: ${rp(c.bonus)}\nPotongan: ${rp(c.pot)}\n*Total: ${rp(c.total)}*\n${c.paid ? '\nStatus: sudah dibayar ' + fmtDateLong(c.rec.tanggalBayar) : ''}\n\nTerima kasih atas dedikasinya 🙏\n${sigName()}`); }
 function exportGaji(p) {
   const rows = [['ID', 'Guru', 'Jenis', 'Cara hitung', 'Tarif', 'Hari hadir', 'Pertemuan', 'Jam', 'Gaji pokok', 'Bonus', 'Potongan', 'Total', 'Tanggal bayar']];
@@ -2529,11 +2599,12 @@ function laporanHtml(l) {
 }
 function viewLaporan(id) {
   const l = D('Laporan').find(x => x.id === id), s = siswaById(l.siswaId);
-  modal('Laporan Hasil Belajar', laporanHtml(l), `<button class="btn ghost" onclick="printHtml($('#modal .inv').outerHTML,'Laporan ${jsq(s.nama)}')">${ic('print')} Cetak / PDF</button>${S.role !== 'ortu' ? `<button class="btn wa" onclick="waLaporan('${id}')">${ic('wa')} Kirim WA</button>` : ''}`, true);
+  modal('Laporan Hasil Belajar', laporanHtml(l), `<button class="btn ghost" onclick="printHtml($('#modal .inv').outerHTML,'Laporan ${jsq(s.nama)}')">${ic('print')} Cetak / PDF</button>${S.role !== 'ortu' ? `<button class="btn ghost" onclick="waLaporan('${id}')">${ic('wa')} Kirim Teks</button>` : ''}${imgBtn()}`, true);
+  prepImage('Laporan-' + s.nama + '-' + l.periode, S.role !== 'ortu' ? s.waOrtu : '', `Laporan hasil belajar ${s.nama} — ${fmtPeriod(l.periode)}`);
 }
 function waLaporan(id) {
   const l = D('Laporan').find(x => x.id === id), s = siswaById(l.siswaId), st = S.settings, asp = aspekOf(l);
-  openWa(s.waOrtu, `Assalamu'alaikum Wr. Wb\nBapak/Ibu ${s.ortu || ''},\n\nBerikut *Laporan Hasil Belajar* ananda *${s.nama}* bulan ${fmtPeriod(l.periode)}:\n\n📘 Program: ${progById(l.programId).nama}${l.level ? ' (Level ' + l.level + ')' : ''}\n📅 Kehadiran: ${l.hadir}/${l.pertemuan} pertemuan\n${Object.entries(asp).map(([k, v]) => `• ${k}: ${v}`).join('\n')}\n\n*Evaluasi:*\n${l.evaluasi || '-'}\n\n*Catatan guru:*\n${l.catatanGuru || '-'}${l.rekomendasi ? '\n\n*Rekomendasi:* ' + l.rekomendasi : ''}\n\nLaporan lengkap dapat dilihat di Portal Orang Tua${st.portalUrl ? ': ' + st.portalUrl : ''}.\n\nWassalamualaikum Wr. Wb\n${sigName()}`);
+  openWa(s.waOrtu, `Assalamu'alaikum Wr. Wb\n${sapaOrtu(s)},\n\nBerikut *Laporan Hasil Belajar* ananda *${s.nama}* bulan ${fmtPeriod(l.periode)}:\n\n📘 Program: ${progById(l.programId).nama}${l.level ? ' (Level ' + l.level + ')' : ''}\n📅 Kehadiran: ${l.hadir}/${l.pertemuan} pertemuan\n${Object.entries(asp).map(([k, v]) => `• ${k}: ${v}`).join('\n')}\n\n*Evaluasi:*\n${l.evaluasi || '-'}\n\n*Catatan guru:*\n${l.catatanGuru || '-'}${l.rekomendasi ? '\n\n*Rekomendasi:* ' + l.rekomendasi : ''}\n\nLaporan lengkap dapat dilihat di Portal Orang Tua${st.portalUrl ? ': ' + st.portalUrl : ''}.\n\nWassalamualaikum Wr. Wb\n${sigName()}`);
 }
 function belCatatan() {
   const f = S.f, p = f.ctP || thisPeriod();
