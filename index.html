@@ -875,7 +875,7 @@ function promptBox(title, label, onOk, okLabel = 'Simpan', ph = '') {
 }
 function printHtml(inner, title = 'Cetak') {
   const css = $('style').outerHTML;
-  const html = `<!DOCTYPE html><html><head><meta charset="utf-8"><title>${esc(title)}</title><link href="https://fonts.googleapis.com/css2?family=Fredoka:wght@500;600;700&family=Nunito:wght@400;600;700;800&display=swap" rel="stylesheet">${css}<style>body{background:#fff;padding:24px}@media print{body{padding:0}.inv{border:0}}</style></head><body><div style="max-width:760px;margin:0 auto">${inner}</div><script>setTimeout(function(){window.print()},800)<\/script></body></html>`;
+  const html = `<!DOCTYPE html><html><head><meta charset="utf-8"><title>${esc(title)}</title><link href="https://fonts.googleapis.com/css2?family=Fredoka:wght@500;600;700&family=Nunito:wght@400;600;700;800&display=swap" rel="stylesheet">${css}<style>body{background:#fff;padding:24px}.print-area{max-width:760px;margin:0 auto}@page{size:A4;margin:12mm}@media print{body{padding:0}.print-area,.print-area *{visibility:visible!important}.print-area{position:static!important;width:auto}.inv{border:0;break-inside:avoid}}</style></head><body><div class="print-area">${inner}</div><script>window.onload=function(){setTimeout(function(){window.print()},400)}<\/script></body></html>`;
   const w = window.open('', '_blank');
   if (w) { w.document.open(); w.document.write(html); w.document.close(); }
   else { const d = document.createElement('div'); d.className = 'print-area'; d.innerHTML = inner; document.body.appendChild(d); window.print(); setTimeout(() => d.remove(), 500); }
@@ -1670,7 +1670,7 @@ function detailSiswa(id) {
     </tbody></table></div>
     <button class="btn sm ghost" style="margin:8px 0 16px" onclick="formSp('${id}')">${ic('plus')} Tambah / ganti program</button>
     ${jad.length ? `<p class="small" style="margin-bottom:14px"><b>Jadwal:</b> ${jad.map(j => `${j.hari} ${j.jamMulai} (${esc(progById(j.programId).nama)}, ${esc(guruById(j.guruId).nama)})`).join(' · ')}</p>` : ''}
-    <h4 style="margin-bottom:6px">Tagihan belum lunas</h4>
+    <div class="row" style="margin-bottom:6px"><h4>Tagihan belum lunas</h4><div class="spacer"></div>${ar.length ? `<button class="btn sm ghost" onclick="bebaskanForm('${id}')">${ic('ban')} Bebaskan semua tunggakan</button>` : ''}</div>
     ${ar.length || jual.some(j => !j.batal && jualSt(j).sisa) ? `<div class="table-wrap"><table class="t"><tbody>${ar.map(b => `<tr class="unpaid"><td>SPP ${esc(progById(b.pid).nama)} — ${fmtPeriod(b.p)}</td><td>${billBadge(b.st)}</td><td class="r num"><b>${rp(b.sisa)}</b></td></tr>`).join('')}${jual.filter(j => !j.batal && jualSt(j).sisa).map(j => `<tr class="unpaid"><td>${esc(j.nama)}${j.level ? ' Lv ' + esc(j.level) : ''}</td><td>${jualBadge(jualSt(j).st)}</td><td class="r num"><b>${rp(jualSt(j).sisa)}</b></td></tr>`).join('')}</tbody></table></div>` : '<p class="small muted">Tidak ada tagihan 🎉</p>'}
     <h4 style="margin:16px 0 6px">Riwayat pembayaran</h4>
     ${kws.length ? `<div class="table-wrap"><table class="t"><tbody>${kws.slice(0, 15).map(([no, ks]) => { const v = ks.filter(k => !k.batal); return `<tr class="${v.length ? '' : 'void'}"><td class="nowrap">${fmtDate(ks[0].tanggal)}</td><td class="small">${ks.map(k => esc(kasLineLabel(k))).join('<br>')}</td><td class="small">${esc(ks[0].metode)}</td><td class="r num"><b>${rp(sum(v, k => k.nominal))}</b></td><td>${v.length ? `<button class="icon-btn" onclick="showKuitansi('${no}')">${ic('file')}</button>` : ''}</td></tr>`; }).join('')}</tbody></table></div>` : '<p class="small muted">Belum ada pembayaran</p>'}
@@ -1919,7 +1919,7 @@ function sppTagihan() {
       <td>${progChip(b.pid)}${b.sp.level ? ` <span class="xs muted">Lv ${esc(b.sp.level)}</span>` : ''}${perPertemuan(b.sp) ? `<div class="xs muted">${hadirCount(b.sid, b.pid, p)} pertemuan × ${rp(tarifSp(b.sp))}</div>` : ''}</td>
       <td class="r num"><b>${rp(b.tag)}</b></td><td class="r num">${b.bayar ? rp(b.bayar) : '-'}</td>
       <td class="nowrap">${fmtDate(b.due)}</td><td>${billBadge(b.st)}</td>
-      <td class="nowrap r">${b.open ? `<button class="btn sm green" onclick="formBayar('${s.id}',{bills:['${b.pid}|${p}']})">Bayar</button><button class="icon-btn" title="Kirim tagihan WA" onclick="openWa('${s.waOrtu}',tagihanWa('${s.id}'))">${ic('wa')}</button><button class="icon-btn" title="Bebaskan tagihan" onclick="bebaskan('${s.id}','${b.pid}','${p}')">${ic('ban')}</button>`
+      <td class="nowrap r">${b.open ? `<button class="btn sm green" onclick="formBayar('${s.id}',{bills:['${b.pid}|${p}']})">Bayar</button><button class="icon-btn" title="Kirim tagihan WA" onclick="openWa('${s.waOrtu}',tagihanWa('${s.id}'))">${ic('wa')}</button><button class="icon-btn" title="Bebaskan tagihan (bisa pilih semua bulan)" onclick="bebaskan('${s.id}','${b.pid}','${p}')">${ic('ban')}</button>${(n => n > 1 ? `<div><button class="xs" style="color:var(--red);background:none;border:0;padding:2px 0;cursor:pointer;text-decoration:underline;font-weight:700" onclick="bebaskanForm('${s.id}')">Bebaskan semua (${n})</button></div>` : '')(arrearsOf(s.id).length)}`
         : b.pays.filter(k => k.noKuitansi).map(k => `<button class="btn sm ghost" onclick="showKuitansi('${k.noKuitansi}')">${ic('file')} Kuitansi</button>`).join('') + (b.st === 'Dibebaskan' ? `<button class="icon-btn" title="Batalkan pembebasan" onclick="batalKas('${b.pays.find(k => k.metode === 'Dibebaskan').id}')">${ic('x')}</button>` : '')}</td>
     </tr>`; }).join('') || `<tr><td colspan="7"><div class="empty">${flt === 'open' ? '🎉 Semua tagihan bulan ini sudah lunas' : 'Tidak ada data'}</div></td></tr>`}
     </tbody></table></div>
@@ -2053,10 +2053,32 @@ function batalKas(id) {
     try { await saveRow('Kas', { ...D('Kas').find(k => k.id === id), batal: batalStamp(reason) }); toast('Transaksi dibatalkan'); rerender(); } catch (e) { toast(e.message, true); }
   }, 'Batalkan');
 }
-function bebaskan(sid, pid, p) {
-  promptBox(`Bebaskan SPP ${esc(progById(pid).nama)} ${fmtPeriod(p)}`, 'Alasan (mis. libur, beasiswa, diskon penuh)', async reason => {
-    try { await saveRow('Kas', { noKuitansi: '', tanggal: todayStr(), jenis: 'Masuk', kategori: 'SPP', cabang: siswaById(sid).cabang, siswaId: sid, programId: pid, periode: p, refId: '', nominal: '0', metode: 'Dibebaskan', keterangan: reason, batal: '' }); toast('Tagihan dibebaskan'); rerender(); } catch (e) { toast(e.message, true); }
-  }, 'Bebaskan');
+/* Bebaskan tagihan: satu bulan (pilih) atau semua tunggakan siswa sekaligus */
+function bebaskan(sid, pid, p) { bebaskanForm(sid, pid && p ? pid + '|' + p : ''); }
+function bebaskanForm(sid, only) {
+  const s = siswaById(sid), ar = arrearsOf(sid);
+  if (!ar.length) return toast('Tidak ada tunggakan untuk ' + s.nama, true);
+  const on = b => !only || only === b.pid + '|' + b.p;
+  window.__bbSum = () => { const c = [...document.querySelectorAll('#fBb input[name=bill]:checked')]; $('#bbBtn').textContent = c.length ? `Bebaskan ${c.length} tagihan (${rp(sum(c, x => +x.dataset.sisa))})` : 'Pilih tagihan'; $('#bbBtn').disabled = !c.length; };
+  window.__bbAll = v => { document.querySelectorAll('#fBb input[name=bill]').forEach(x => x.checked = v); __bbSum(); };
+  modal(`Bebaskan Tagihan — ${esc(s.nama)}`, `<form id="fBb" onsubmit="event.preventDefault();saveBebaskan('${sid}')">
+    <div class="row" style="margin-bottom:8px"><b>${ar.length} tagihan belum lunas</b><div class="spacer"></div><button type="button" class="btn sm ghost" onclick="__bbAll(true)">Centang semua</button><button type="button" class="btn sm ghost" onclick="__bbAll(false)">Kosongkan</button></div>
+    <div class="table-wrap"><table class="t"><tbody>${ar.map(b => `<tr><td style="width:32px"><input type="checkbox" name="bill" value="${b.pid}|${b.p}" data-sisa="${b.sisa}" ${on(b) ? 'checked' : ''} onchange="__bbSum()"></td><td>SPP ${esc(progById(b.pid).nama)} — ${fmtPeriod(b.p)}${b.bayar ? `<div class="xs muted">sudah dibayar ${rp(b.bayar)}</div>` : ''}</td><td>${billBadge(b.st)}</td><td class="r num"><b>${rp(b.sisa)}</b></td></tr>`).join('')}</tbody></table></div>
+    <div class="field" style="margin-top:12px"><label>Alasan</label><input class="input" name="alasan" required placeholder="mis. tidak les, libur, beasiswa, data lama"></div>
+    <p class="xs muted">Tagihan yang dibebaskan tidak dihitung tunggakan dan <b>tidak menambah pemasukan</b>. Bisa dibatalkan per bulan lewat ikon ✕ di Tagihan Bulanan.</p>
+  </form>`, `<button class="btn ghost" onclick="closeModal()">Batal</button><button class="btn red" id="bbBtn" onclick="saveBebaskan('${sid}')">Bebaskan</button>`, true);
+  __bbSum();
+}
+async function saveBebaskan(sid) {
+  const f = $('#fBb'), reason = f.alasan.value.trim(), picks = [...f.querySelectorAll('input[name=bill]:checked')].map(x => x.value.split('|'));
+  if (!picks.length) return toast('Pilih minimal satu tagihan', true);
+  if (!reason) { f.alasan.focus(); return toast('Alasan wajib diisi', true); }
+  const s = siswaById(sid), t = todayStr();
+  try {
+    loading(true);
+    await saveRows('Kas', picks.map(([pid, p]) => ({ noKuitansi: '', tanggal: t, jenis: 'Masuk', kategori: 'SPP', cabang: s.cabang, siswaId: sid, programId: pid, periode: p, refId: '', nominal: '0', metode: 'Dibebaskan', keterangan: reason, batal: '' })));
+    loading(false); closeModal(); toast(picks.length + ' tagihan dibebaskan ✓'); rerender();
+  } catch (e) { loading(false); toast(e.message, true); }
 }
 
 /* ================= BUKU & BIAYA LAIN ================= */
