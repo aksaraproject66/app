@@ -829,8 +829,16 @@ async function sendDoc(kind) {
   const isPdf = kind === 'pdf', blob = isPdf ? IMG.pdf : IMG.blob;
   if (!blob) return toast((isPdf ? 'PDF' : 'Gambar') + ' belum siap, coba sebentar lagi', true);
   const file = new File([blob], (IMG.name || 'dokumen') + (isPdf ? '.pdf' : '.png'), { type: isPdf ? 'application/pdf' : 'image/png' });
+  const btn0 = $(isPdf ? '#pdfBtn' : '#imgBtn');
   if (navigator.canShare && navigator.canShare({ files: [file] })) {
-    try { await navigator.share({ files: [file], text: IMG.text }); return; }
+    /* teks disalin dulu (tanpa menunggu) — sebagian WhatsApp (iPhone, PDF, aplikasi Windows) tidak ikut mengirim keterangan */
+    if (IMG.text && navigator.clipboard && navigator.clipboard.writeText) navigator.clipboard.writeText(IMG.text).catch(() => {});
+    try {
+      await navigator.share({ files: [file], text: IMG.text });
+      if (IMG.text && waNum(IMG.wa) && btn0) { btn0.innerHTML = ic('wa') + ' Kirim teksnya juga'; btn0.onclick = () => window.open(waLink(IMG.wa, IMG.text), '_blank'); }
+      if (IMG.text) toast('Terkirim ✓ Kalau teks tidak ikut: tekan "Kirim teksnya juga" atau tempel (Paste) di chat');
+      return;
+    }
     catch (e) { if (e && e.name === 'AbortError') return; }
   }
   /* laptop / browser tanpa Share: gambar disalin (tempel Ctrl+V), PDF diunduh (lampirkan sebagai Dokumen) */
@@ -848,7 +856,7 @@ let toastT;
 function toast(msg, err) {
   let t = $('#toast'); if (!t) { t = document.createElement('div'); t.id = 'toast'; document.body.appendChild(t); }
   t.className = 'toast' + (err ? ' err' : ''); t.textContent = msg; t.style.display = 'block';
-  clearTimeout(toastT); toastT = setTimeout(() => t.style.display = 'none', 3000);
+  clearTimeout(toastT); toastT = setTimeout(() => t.style.display = 'none', msg.length > 60 ? 6000 : 3000);
 }
 let loadingN = 0;
 function loading(on) {
