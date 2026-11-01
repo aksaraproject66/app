@@ -291,12 +291,12 @@ table.t{width:100%;border-collapse:collapse;font-size:14px}
 /* dokumen di HP: kop & cap LUNAS tidak saling menimpa */
 @media(max-width:560px){
   .modal-b{padding:12px}
-  .modal .inv{padding:16px}
-  .modal .inv-h{flex-wrap:wrap;gap:10px}
-  .modal .inv-h img{width:84px}
-  .modal .inv-h > div:nth-child(3){flex-basis:100%;text-align:left!important;background:var(--pri-50);border-radius:10px;padding:6px 10px}
-  .modal .inv .stamp{position:static;display:inline-block;transform:rotate(-4deg);margin:2px 0 12px;font-size:16px;background:none}
-  .modal .inv td{word-break:break-word}
+  .modal .inv,.pub-doc .inv{padding:16px}
+  .modal .inv-h,.pub-doc .inv-h{flex-wrap:wrap;gap:10px}
+  .modal .inv-h img,.pub-doc .inv-h img{width:84px}
+  .modal .inv-h > div:nth-child(3),.pub-doc .inv-h > div:nth-child(3){flex-basis:100%;text-align:left!important;background:var(--pri-50);border-radius:10px;padding:6px 10px}
+  .modal .inv .stamp,.pub-doc .inv .stamp{position:static;display:inline-block;transform:rotate(-4deg);margin:2px 0 12px;font-size:16px;background:none}
+  .modal .inv td,.pub-doc .inv td{word-break:break-word}
   .modal-f .btn{flex:1 1 auto}
 }
 .img-render .inv{border:0;border-radius:0}
@@ -415,6 +415,23 @@ function createApi(DB) {
   const fail = (e, m) => ({ ok: false, error: e, message: m || e });
   const settings = () => Object.assign({}, DEFAULT_SETTINGS, DB.settings());
   const pubSettings = () => { const s = settings(), o = {}; PUBLIC_KEYS.forEach(k => o[k] = s[k]); return o; };
+  /* link kuitansi online (dibuka ortu tanpa login) — kunci = hash(rahasia + no. kuitansi) */
+  const docKey = (sec, no) => DB.hash(sec + '|kw|' + no).slice(0, 16);
+  function kuitansiPublik(req) {
+    const sec = settings().linkSecret, no = String(req.no || '');
+    if (!sec || !no || String(req.k || '') !== docKey(sec, no)) return fail('Link kuitansi tidak valid.');
+    const kas = T('Kas').filter(k => k.noKuitansi === no && !k.batal);
+    if (!kas.length) return fail('Kuitansi tidak ditemukan atau sudah dibatalkan.');
+    const sid = kas[0].siswaId, s = T('Siswa').find(r => r.id === sid) || { id: sid, nama: '-' };
+    const refs = {}; kas.forEach(k => refs[k.refId] = 1);
+    return ok({ settings: pubSettings(), db: {
+      Kas: kas.map(k => ({ id: k.id, noKuitansi: k.noKuitansi, tanggal: k.tanggal, jenis: k.jenis, kategori: k.kategori, cabang: k.cabang, siswaId: k.siswaId, programId: k.programId, periode: k.periode, refId: k.refId, nominal: k.nominal, metode: k.metode, keterangan: '', batal: '' })),
+      Siswa: [{ id: s.id, nama: s.nama, ortu: s.ortu, ibu: s.ibu, ayah: s.ayah, cabang: s.cabang, status: s.status }],
+      SiswaProgram: T('SiswaProgram').filter(r => r.siswaId === sid),
+      Program: T('Program'),
+      Penjualan: T('Penjualan').filter(r => refs[r.id]).map(r => ({ id: r.id, nama: r.nama, level: r.level, qty: r.qty }))
+    } });
+  }
   const list = c => String(c || '').split(',').map(x => x.trim()).filter(Boolean);
   const isOwner = u => u.akses === 'Pemilik';
   const safeUser = u => ({ id: u.id, username: u.username, nama: u.nama, akses: u.akses || 'Admin', cabang: u.cabang || '', keuangan: u.keuangan || 'Ya', status: u.status || 'Aktif' });
@@ -468,6 +485,7 @@ function createApi(DB) {
     const a = req.action;
     if (a === 'ping') return ok({ time: DB.nowISO() });
     if (a === 'login') return login(req);
+    if (a === 'kuitansi') return kuitansiPublik(req);
     const s = DB.sessGet(req.token);
     if (!s) return fail('SESSION', 'Sesi berakhir, silakan login kembali.');
     if (a === 'logout') { DB.sessDel(req.token); return ok(); }
@@ -502,6 +520,11 @@ function createApi(DB) {
     });
     switch (a) {
       case 'bootstrap': return ok({ data: bootstrap(u) });
+      case 'docLink': {
+        let sec = settings().linkSecret;
+        if (!sec) { sec = DB.hash(String(DB.uid ? DB.uid() : '') + Math.random() + DB.nowISO()).slice(0, 32); DB.lock(() => DB.saveSettings({ linkSecret: sec })); }
+        return ok({ k: (req.nos || [req.no]).map(n => docKey(sec, String(n || ''))) });
+      }
       case 'save': checkTable(req.table, true); return ok({ row: DB.lock(() => writeRows(who, req.table, prep(req.table, [req.row]))[0]) });
       case 'saveMany': checkTable(req.table, true); return ok({ rows: DB.lock(() => writeRows(who, req.table, prep(req.table, req.rows || []))) });
       case 'remove': {
@@ -580,7 +603,7 @@ function createApi(DB) {
   /* ---------- GURU ---------- */
   function scopeOf(g) {
     const cabs = list(g.cabang);
-    const jad = T('Jadwal').filter(j => j.guruId === g.id && j.status !== 'Nonaktif');
+    const jad = T('Jadwal').filter(j => list(j.guruId).indexOf(g.id) > -1 && j.status !== 'Nonaktif');
     const diajar = {}; jad.forEach(j => list(j.siswaIds).forEach(x => diajar[x] = 1));
     const siswa = T('Siswa').filter(s => s.status === 'Aktif' && (diajar[s.id] || !cabs.length || cabs.indexOf(s.cabang) > -1));
     const ids = {}; siswa.forEach(s => ids[s.id] = s);
@@ -662,7 +685,7 @@ function createApi(DB) {
       Penjualan: mine('Penjualan').filter(p => !p.batal),
       Perkembangan: mine('Perkembangan').map(p => Object.assign({}, p, { guruNama: gn(p.guruId) })),
       Laporan: mine('Laporan').map(p => Object.assign({}, p, { guruNama: gn(p.guruId) })),
-      Jadwal: T('Jadwal').filter(j => j.status !== 'Nonaktif' && list(j.siswaIds).indexOf(sid) > -1).map(j => Object.assign({}, j, { guruNama: gn(j.guruId) }))
+      Jadwal: T('Jadwal').filter(j => j.status !== 'Nonaktif' && list(j.siswaIds).indexOf(sid) > -1).map(j => Object.assign({}, j, { guruNama: list(j.guruId).map(gn).filter(Boolean).join(', ') }))
     };
   }
 
@@ -801,9 +824,9 @@ const loadH2C = () => loadLib('h2c', 'https://cdnjs.cloudflare.com/ajax/libs/htm
 const loadPDF = () => loadLib('pdf', 'https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js', () => window.jspdf && window.jspdf.jsPDF);
 const IMG = { blob: null, pdf: null, name: '', busy: null, wa: '', text: '' };
 /* dipanggil saat dokumen dibuka: gambar & PDF disiapkan lebih dulu agar tombol share bisa langsung membuka menu Share (syarat iPhone) */
-function prepImage(name, wa, text) {
-  Object.assign(IMG, { blob: null, pdf: null, name: String(name).replace(/[^\w-]+/g, '-'), wa: wa || '', text: text || '' });
-  const src = $('#modal .inv'); if (!src) return;
+function prepImage(name, wa, text, srcEl, pub) {
+  Object.assign(IMG, { blob: null, pdf: null, name: String(name).replace(/[^\w-]+/g, '-'), wa: wa || '', text: text || '', pub: !!pub });
+  const src = srcEl || $('#modal .inv'); if (!src) return;
   const job = IMG.busy = (async () => {
     const h2c = await loadH2C();
     const box = document.createElement('div'); box.className = 'img-render';
@@ -813,7 +836,7 @@ function prepImage(name, wa, text) {
     finally { box.remove(); }
   })();
   const setBtn = (id, html, ok) => { const b = $('#' + id); if (b) { b.disabled = !ok; b.innerHTML = html; } };
-  job.then(c => new Promise(r => c.toBlob(r, 'image/png'))).then(b => { if (IMG.busy !== job) return; IMG.blob = b; setBtn('imgBtn', ic('wa') + ' Kirim Gambar', true); })
+  job.then(c => new Promise(r => c.toBlob(r, 'image/png'))).then(b => { if (IMG.busy !== job) return; IMG.blob = b; setBtn('imgBtn', IMG.pub ? ic('download') + ' Unduh Gambar' : ic('wa') + ' Kirim Gambar', true); })
      .catch(() => setBtn('imgBtn', 'Gambar tidak tersedia'));
   Promise.all([job, loadPDF()]).then(([c, JsPDF]) => {
     if (IMG.busy !== job) return;
@@ -821,10 +844,10 @@ function prepImage(name, wa, text) {
     const doc = new JsPDF({ unit: 'mm', format: [w + 2 * m, h + 2 * m], orientation: 'portrait', compress: true });
     doc.addImage(c.toDataURL('image/jpeg', 0.92), 'JPEG', m, m, w, h);
     doc.setProperties({ title: IMG.name });
-    IMG.pdf = doc.output('blob'); setBtn('pdfBtn', ic('file') + ' Kirim PDF', true);
+    IMG.pdf = doc.output('blob'); setBtn('pdfBtn', IMG.pub ? ic('download') + ' Unduh PDF' : ic('file') + ' Kirim PDF', true);
   }).catch(() => setBtn('pdfBtn', 'PDF tidak tersedia'));
 }
-const imgBtn = () => `<button class="btn wa" id="pdfBtn" disabled onclick="sendDoc('pdf')">Menyiapkan PDF…</button><button class="btn wa" id="imgBtn" disabled onclick="sendDoc('img')">Menyiapkan gambar…</button>`;
+const imgBtn = (ghost) => `<button class="btn ${ghost ? 'ghost' : 'wa'}" id="pdfBtn" disabled onclick="sendDoc('pdf')">Menyiapkan PDF…</button><button class="btn ${ghost ? 'ghost' : 'wa'}" id="imgBtn" disabled onclick="sendDoc('img')">Menyiapkan gambar…</button>`;
 async function sendDoc(kind) {
   const isPdf = kind === 'pdf', blob = isPdf ? IMG.pdf : IMG.blob;
   if (!blob) return toast((isPdf ? 'PDF' : 'Gambar') + ' belum siap, coba sebentar lagi', true);
@@ -850,6 +873,31 @@ async function sendDoc(kind) {
   toast(copied ? 'Gambar disalin ✓ Buka chat WhatsApp lalu tempel (Ctrl+V)' : isPdf ? 'PDF diunduh ✓ Di chat WhatsApp klik 📎 → Dokumen → pilih file PDF' : 'Gambar diunduh ✓ Lampirkan di chat WhatsApp', false);
 }
 const sendImage = () => sendDoc('img');
+function dlDoc(kind) {
+  const isPdf = kind === 'pdf', blob = isPdf ? IMG.pdf : IMG.blob;
+  if (!blob) return toast('Belum siap, coba sebentar lagi', true);
+  const a = document.createElement('a'); a.href = URL.createObjectURL(blob); a.download = (IMG.name || 'kuitansi') + (isPdf ? '.pdf' : '.png'); document.body.appendChild(a); a.click(); a.remove();
+  toast(isPdf ? 'PDF diunduh ✓' : 'Gambar diunduh ✓');
+}
+/* halaman kuitansi online (dibuka ortu dari link WA, tanpa login) */
+async function initPublic(no, k) {
+  $('#app').innerHTML = '<div class="empty" style="padding:60px 16px">Memuat kuitansi…</div>';
+  try {
+    const r = await call('kuitansi', { no, k });
+    S.settings = r.settings; S.db = r.db; S.role = 'public'; S.cab = '';
+    const s = r.db.Siswa[0] || {};
+    document.title = 'Kuitansi ' + no + ' — ' + (S.settings.namaLembaga || '');
+    $('#app').innerHTML = `<div style="max-width:780px;margin:0 auto;padding:16px">
+      <div class="pub-doc">${kuitansiHtml(no)}</div>
+      <div class="row" style="justify-content:center;margin-top:16px;flex-wrap:wrap;gap:8px">
+        <button class="btn" id="pdfBtn" disabled onclick="dlDoc('pdf')">Menyiapkan PDF…</button>
+        <button class="btn ghost" id="imgBtn" disabled onclick="dlDoc('img')">Menyiapkan gambar…</button>
+        <button class="btn ghost" onclick="printHtml($('.pub-doc .inv').outerHTML,'Kuitansi ${jsq(no)}')">${ic('print')} Cetak</button>
+      </div>
+      <p class="small muted" style="text-align:center;margin-top:12px">Kuitansi resmi ${esc(S.settings.namaLembaga || '')} · pertanyaan hubungi WA ${esc(S.settings.noWa || '')}</p></div>`;
+    prepImage('Kuitansi-' + (s.nama || '') + '-' + no, '', '', $('.pub-doc .inv'), true);
+  } catch (e) { $('#app').innerHTML = `<div class="card" style="max-width:480px;margin:60px auto;text-align:center"><h3>Kuitansi tidak dapat dibuka</h3><p class="small muted" style="margin-top:8px">${esc(e.message)}</p></div>`; }
+}
 
 /* ---------------- UI primitives ---------------- */
 let toastT;
@@ -945,6 +993,14 @@ const lvIdx = it => { const i = levelsOf(progById(it.programId)).indexOf(it.leve
 const byItemOrder = (a, b) => (progs().findIndex(p => p.id === a.programId) - progs().findIndex(p => p.id === b.programId)) || (lvIdx(a) - lvIdx(b)) || String(a.level).localeCompare(String(b.level), 'id', { numeric: true }) || String(a.nama).localeCompare(String(b.nama));
 const siswaById = id => D('Siswa').find(s => s.id === id) || { id, nama: '(terhapus)', cabang: '' };
 const guruById = id => D('Guru').find(g => g.id === id) || { id, nama: id ? '(guru?)' : '-' };
+const guruIdsOf = j => splitList(j && j.guruId);
+const jadHasGuru = (j, gid) => guruIdsOf(j).includes(gid);
+const guruNames = j => (j && j.guruNama) || guruIdsOf(j).map(id => guruById(id).nama).join(', ') || '(guru belum dipilih)';
+/* filter cepat daftar siswa (nama / panggilan) tanpa render ulang */
+function qFilter(inp, key, sel) { const q = inp.value.toLowerCase().trim(); S.f[key] = inp.value; $$(sel).forEach(r => r.style.display = !q || (r.dataset.q || '').includes(q) ? '' : 'none'); }
+const qHit = (s, key) => { const q = String(S.f[key] || '').toLowerCase().trim(); return !q || qKey(s).includes(q); };
+const qKey = s => (String(s.nama || '') + ' ' + String(s.panggilan || '')).toLowerCase();
+const qBox = (key, sel, ph = 'Cari nama / panggilan siswa…') => `<input class="input" type="search" style="max-width:260px" placeholder="${ph}" value="${esc(S.f[key] || '')}" oninput="qFilter(this,'${key}','${sel}')">`;
 const itemById = id => D('Item').find(x => x.id === id) || { id, nama: '(item?)' };
 const cabList = () => splitList(S.settings.cabang);
 const kelasList = () => splitList(S.settings.kelas);
@@ -1045,10 +1101,18 @@ function kuitansiHtml(no) {
     <div class="sign"><div>Penerima,<div class="ln"></div><b>${esc(st.namaLembaga)}</b></div></div>
   </div>`;
 }
+/* link kuitansi online untuk ortu (dibuat server, tanpa login) */
+const KWLINK = {};
+const pubBase = () => { const u = String(S.settings.portalUrl || '').trim(); return /^https?:\/\//.test(u) ? u.split(/[?#]/)[0] : location.href.split(/[?#]/)[0]; };
+function kwLinkFetch(no) {
+  if (KWLINK[no]) return Promise.resolve(KWLINK[no]);
+  if (/^file:/.test(location.href) && !/^https?:/.test(String(S.settings.portalUrl || ''))) return Promise.resolve('');
+  return call('docLink', { no }, { silent: true }).then(r => KWLINK[no] = `${pubBase()}?kw=${encodeURIComponent(no)}&k=${encodeURIComponent(r.k[0])}`).catch(() => '');
+}
 function kuitansiWa(no) {
   const rows = D('Kas').filter(k => k.noKuitansi === no && !k.batal); if (!rows.length) return '';
   const k0 = rows[0], s = siswaById(k0.siswaId);
-  return `Assalamualaikum Wr. Wb\n${sapaOrtu(s)}\nBerikut kami sampaikan informasi Kuitansi Pembayaran Ananda ${s.nama}\n\n📌 *KUITANSI PEMBAYARAN*\nNo. ${no}\n\nNama : ${s.nama}\nProgram Belajar : ${progNamesOf(s.id)}\nTanggal Pembayaran : ${fmtDateLong(k0.tanggal)}\nMetode Pembayaran : ${k0.metode}\nRincian Pembayaran :\n${rows.map(k => `• ${kasLineLabel(k)}: ${rp(k.nominal)}`).join('\n')}\n*Total : ${rp(sum(rows, k => k.nominal))}*\n\n_Terima kasih atas pembayaran Bapak/Ibu._\n\nWassalamualaikum Wr. Wb\n${sigName()}`;
+  return `Assalamualaikum Wr. Wb\n${sapaOrtu(s)}\nBerikut kami sampaikan informasi Kuitansi Pembayaran Ananda ${s.nama}\n\n📌 *KUITANSI PEMBAYARAN*\nNo. ${no}\n\nNama : ${s.nama}\nProgram Belajar : ${progNamesOf(s.id)}\nTanggal Pembayaran : ${fmtDateLong(k0.tanggal)}\nMetode Pembayaran : ${k0.metode}\nRincian Pembayaran :\n${rows.map(k => `• ${kasLineLabel(k)}: ${rp(k.nominal)}`).join('\n')}\n*Total : ${rp(sum(rows, k => k.nominal))}*${KWLINK[no] ? `\n\n📄 Kuitansi (lihat / unduh PDF):\n${KWLINK[no]}` : ''}\n\n_Terima kasih atas pembayaran Bapak/Ibu._\n\nWassalamualaikum Wr. Wb\n${sigName()}`;
 }
 function tagihanItems(sid) {
   const bills = arrearsOf(sid).concat(billsOfSiswa(sid, addMonths(thisPeriod(), 1), 0).filter(b => b.open && b.due <= addDays(todayStr(), +S.settings.hariPengingat || 7)));
@@ -1142,6 +1206,8 @@ async function startApp() {
   if (DEMO && !$('.mode-flag')) { const f = document.createElement('div'); f.className = 'mode-flag'; f.textContent = 'MODE DEMO'; document.body.appendChild(f); }
 }
 async function init() {
+  const qs = new URLSearchParams(location.search);
+  if (qs.get('kw')) return initPublic(qs.get('kw'), qs.get('k') || '');
   const sess = store.get(SESS_KEY);
   if (sess && sess.token) {
     Object.assign(S, { token: sess.token, role: sess.role, profile: sess.profile });
@@ -1474,7 +1540,7 @@ PAGES.dashboard = function () {
     </div>
     <div class="grid">
     <div class="card"><div class="card-head"><h3>Jadwal hari ini (${hari})</h3><div class="spacer"></div><button class="btn sm ghost" onclick="go('absensi')">Absen</button></div>
-      ${jad.length ? jad.map(j => { const done = absToday.some(a => a.jadwalId === j.id); return `<div class="li"><div class="avatar" style="background:${progColor(j.programId)}">${esc(j.jamMulai.slice(0, 2))}</div><div class="meta"><b>${esc(j.jamMulai)}–${esc(j.jamSelesai)} · ${esc(progById(j.programId).nama)}</b><span class="small muted">${esc(j.cabang)} · ${esc(guruById(j.guruId).nama)} · ${splitList(j.siswaIds).length} siswa</span></div>${done ? '<span class="badge b-green">✓ Diabsen</span>' : `<button class="btn sm ghost" onclick="S.tab.abs='input';S.f.absDate='${today}';S.f.absJ='${j.id}';go('absensi')">Absen</button>`}</div>`; }).join('') : `<div class="empty">Tidak ada jadwal les hari ini</div>`}
+      ${jad.length ? jad.map(j => { const done = absToday.some(a => a.jadwalId === j.id); return `<div class="li"><div class="avatar" style="background:${progColor(j.programId)}">${esc(j.jamMulai.slice(0, 2))}</div><div class="meta"><b>${esc(j.jamMulai)}–${esc(j.jamSelesai)} · ${esc(progById(j.programId).nama)}</b><span class="small muted">${esc(j.cabang)} · ${esc(guruNames(j))} · ${splitList(j.siswaIds).length} siswa</span></div>${done ? '<span class="badge b-green">✓ Diabsen</span>' : `<button class="btn sm ghost" onclick="S.tab.abs='input';S.f.absDate='${today}';S.f.absJ='${j.id}';go('absensi')">Absen</button>`}</div>`; }).join('') : `<div class="empty">Tidak ada jadwal les hari ini</div>`}
     </div>
     <div class="card"><div class="card-head"><h3>Stok buku menipis</h3><div class="spacer"></div><button class="btn sm ghost" onclick="go('stok')">Stok</button></div>
       ${low.length ? low.slice(0, 7).map(x => `<div class="li"><div class="meta"><b>${esc(x.it.nama)} · Level ${esc(x.it.level)}</b><span class="small muted">${esc(cabLabel())}</span></div><span class="badge ${x.n <= 0 ? 'b-red' : 'b-orange'}">${x.n} tersisa</span></div>`).join('') : '<div class="empty">Stok aman 👍</div>'}
@@ -1558,10 +1624,28 @@ function spRowHtml(i, r = {}) {
     <div class="field"><label>Tanggal mulai (jatuh tempo bulanan)</label><input class="input" type="date" name="mulai" value="${esc(r.mulai || todayStr())}"></div>
     <div class="field"><label>Biaya khusus/diskon (opsional)</label><input class="input" name="biaya" inputmode="numeric" placeholder="default ${rp(p.biaya)}" value="${esc(r.biaya || '')}"></div>
     <label class="check full"><input type="checkbox" name="daftar" ${r.daftar === false ? '' : 'checked'}> Biaya pendaftaran ${rp(p.biayaDaftar)}</label>
+    ${daftarJadHtml(pid, r)}
     ${buku ? `<label class="check full"><input type="checkbox" name="buku" value="${buku.id}" ${r.buku === false ? '' : 'checked'}> Buku modul level ${esc(buku.level)} ${rp(buku.harga)} <span class="xs muted">(stok cabang: ${stokOf(buku.id, S.user.cabang || S.cab || '')})</span></label>` : ''}
   </div>${i > 0 ? `<button type="button" class="btn sm ghost" style="margin-top:8px" onclick="this.closest('.sp-row').remove();daftarTotal()">${ic('trash')} Hapus program</button>` : ''}</div>`;
 }
-function spRowRead(el) { const g = n => el.querySelector(`[name=${n}]`); return { programId: g('pid').value, level: g('level') ? g('level').value : '', mulai: g('mulai').value, biaya: g('biaya').value, daftar: g('daftar').checked, buku: g('buku') ? g('buku').checked : true }; }
+function spRowRead(el) { const g = n => el.querySelector(`[name=${n}]`); return { programId: g('pid').value, level: g('level') ? g('level').value : '', mulai: g('mulai').value, biaya: g('biaya').value, daftar: g('daftar').checked, buku: g('buku') ? g('buku').checked : true,
+  jd: $$('input[name=jd]:checked', el).map(x => x.value), jb: { hari: g('jbHari') ? g('jbHari').value : '', mulai: g('jbMulai') ? g('jbMulai').value : '', selesai: g('jbSelesai') ? g('jbSelesai').value : '', guru: g('jbGuru') ? g('jbGuru').value : '' } }; }
+/* jadwal les di form pendaftaran: pilih jadwal yang sudah ada atau buat baru */
+function daftarCab() { const el = $('#fDaftar select[name=cabang]') || $('#fDaftar input[name=cabang]'); return (el && el.value) || S.user.cabang || S.cab || cabList()[0]; }
+function daftarJadHtml(pid, r) {
+  const cab = r.cab || daftarCab(), jd = r.jd || [], jb = r.jb || {};
+  const js = D('Jadwal').filter(j => j.status !== 'Nonaktif' && j.programId === pid && j.cabang === cab).sort((a, b) => HARI_LES.indexOf(a.hari) - HARI_LES.indexOf(b.hari) || String(a.jamMulai).localeCompare(String(b.jamMulai)));
+  const gurus = D('Guru').filter(g => g.status !== 'Nonaktif' && (!g.cabang || splitList(g.cabang).includes(cab))).sort(byName);
+  const baru = `<div class="form-grid" style="margin-top:6px"><div class="field"><label>Hari</label><select class="input" name="jbHari"><option value="">— tidak —</option>${opt(HARI_LES, jb.hari)}</select></div>
+      <div class="field"><label>Guru (opsional)</label><select class="input" name="jbGuru"><option value="">— nanti —</option>${opt(gurus.map(g => [g.id, g.nama]), jb.guru)}</select></div>
+      <div class="field"><label>Jam mulai</label><input class="input" type="time" name="jbMulai" value="${esc(jb.mulai || '14:00')}"></div>
+      <div class="field"><label>Jam selesai</label><input class="input" type="time" name="jbSelesai" value="${esc(jb.selesai || '')}" placeholder="+1 jam"></div></div>`;
+  return `<div class="field full"><label>Jadwal les <span class="muted">(${esc(cab)} · centang yang diikuti, boleh lebih dari satu)</span></label>
+    ${js.length ? `<div class="picklist">${js.map(j => `<label class="check" style="font-weight:600"><input type="checkbox" name="jd" value="${j.id}" ${jd.includes(j.id) ? 'checked' : ''}> <span><span class="nowrap">${esc(j.hari)} ${esc(j.jamMulai)}–${esc(j.jamSelesai)}</span> <span class="xs muted nowrap">${esc(guruNames(j))} · ${splitList(j.siswaIds).length} siswa</span></span></label>`).join('')}</div>
+    <details style="margin-top:6px" ${jb.hari ? 'open' : ''}><summary class="small" style="cursor:pointer;font-weight:700;color:var(--pri)">➕ Buat jadwal baru</summary>${baru}</details>`
+    : `<div class="small muted">Belum ada jadwal ${esc(progById(pid).nama)} di cabang ini — isi hari & jam untuk membuat jadwal baru (boleh dikosongkan).</div>${baru}`}</div>`;
+}
+const addHour = t => { const [h, m] = String(t || '14:00').split(':').map(Number); return `${pad(Math.min(23, (h || 0) + 1))}:${pad(m || 0)}`; };
 function spRowRefresh(i, keepLevel) {
   const el = $(`.sp-row[data-i="${i}"]`); const r = spRowRead(el); if (!keepLevel) r.level = ''; r.buku = true; r.biaya = keepLevel ? r.biaya : '';
   el.outerHTML = spRowHtml(i, r); daftarTotal();
@@ -1582,7 +1666,7 @@ function daftarTotal() { const el = $('#daftarTot'); if (!el) return; const L = 
 function formDaftar() {
   if (!progAktif().length) return toast('Isi data program dulu di Pengaturan', true);
   const extras = D('Item').filter(it => it.status !== 'Nonaktif' && it.kategori !== 'Buku Modul');
-  modal('Pendaftaran Siswa Baru', `<form id="fDaftar" class="form-grid" onsubmit="event.preventDefault();saveDaftar()" oninput="daftarTotal()">
+  modal('Pendaftaran Siswa Baru', `<form id="fDaftar" class="form-grid" onsubmit="event.preventDefault();saveDaftar()" oninput="daftarTotal()" onchange="if(event.target.name==='cabang')$$('.sp-row').forEach(el => spRowRefresh(+el.dataset.i, true))">
     <h4 style="border:0;padding:0;margin:0">Data siswa & orang tua</h4>
     ${siswaFields({ jk: 'P', kelas: kelasList()[0] })}
     <div class="field"><label>Tanggal daftar</label><input class="input" type="date" name="tglDaftar" value="${todayStr()}"></div>
@@ -1603,6 +1687,12 @@ async function saveDaftar() {
   try {
     const s = await saveRow('Siswa', { nama: f.nama, panggilan: f.panggilan, jk: f.jk, tglLahir: f.tglLahir, kelas: f.kelas, sekolah: f.sekolah, ortu: f.ortu || f.ibu || f.ayah, ayah: f.ayah, ibu: f.ibu, tempatLahir: f.tempatLahir, waOrtu: f.waOrtu, alamat: f.alamat, cabang: f.cabang, tglDaftar: f.tglDaftar || todayStr(), status: 'Aktif', tglStatus: '', kodeOrtu: f.kodeOrtu || rand4(), catatan: f.catatan });
     await saveRows('SiswaProgram', sps.map(r => ({ siswaId: s.id, programId: r.programId, level: r.level, tglMulai: r.mulai || todayStr(), tglSelesai: '', biaya: num(r.biaya) ? String(num(r.biaya)) : '', catatan: '' })));
+    const jads = {}, jNew = [];
+    sps.forEach(r => {
+      r.jd.forEach(id => { const j = jads[id] || D('Jadwal').find(x => x.id === id); if (j && !splitList(j.siswaIds).includes(s.id)) jads[id] = { ...j, siswaIds: splitList(j.siswaIds).concat(s.id).join(',') }; });
+      if (r.jb.hari && r.jb.mulai) jNew.push({ hari: r.jb.hari, jamMulai: r.jb.mulai, jamSelesai: r.jb.selesai || addHour(r.jb.mulai), programId: r.programId, cabang: s.cabang, guruId: r.jb.guru || '', siswaIds: s.id, status: 'Aktif', catatan: '' });
+    });
+    if (Object.keys(jads).length || jNew.length) await saveRows('Jadwal', Object.values(jads).concat(jNew));
     const nota = docNo('NT');
     const pj = await saveRows('Penjualan', lines.map(l => ({ noNota: nota, tanggal: f.tglDaftar || todayStr(), siswaId: s.id, cabang: s.cabang, kategori: l.kategori, itemId: l.itemId, programId: l.programId, nama: l.nama, level: l.level, qty: String(l.qty), harga: String(l.harga), total: String(l.qty * l.harga), catatan: '', batal: '' })));
     closeModal(); toast(`${s.nama} terdaftar (${s.id})`); renderAdmin();
@@ -1677,7 +1767,7 @@ function detailSiswa(id) {
       ${sps.map(sp => `<tr><td>${progChip(sp.programId)}</td><td>${esc(sp.level || '-')}</td><td class="nowrap">${fmtDate(sp.tglMulai)}</td><td class="nowrap">${sp.tglSelesai ? fmtDate(sp.tglSelesai) : '<span class="badge b-green">Aktif</span>'}</td><td class="r num nowrap">${rp(tarifSp(sp))}${perPertemuan(sp) ? '<span class="xs muted">/ptm</span>' : ''}${sp.biaya !== '' ? ' <span class="badge b-periw">khusus</span>' : ''}</td><td class="nowrap r"><button class="icon-btn" onclick="formSp('${id}','${sp.id}')">${ic('edit')}</button></td></tr>`).join('') || '<tr><td colspan="6" class="muted">Belum ada program</td></tr>'}
     </tbody></table></div>
     <button class="btn sm ghost" style="margin:8px 0 16px" onclick="formSp('${id}')">${ic('plus')} Tambah / ganti program</button>
-    ${jad.length ? `<p class="small" style="margin-bottom:14px"><b>Jadwal:</b> ${jad.map(j => `${j.hari} ${j.jamMulai} (${esc(progById(j.programId).nama)}, ${esc(guruById(j.guruId).nama)})`).join(' · ')}</p>` : ''}
+    ${jad.length ? `<p class="small" style="margin-bottom:14px"><b>Jadwal:</b> ${jad.map(j => `${j.hari} ${j.jamMulai} (${esc(progById(j.programId).nama)}, ${esc(guruNames(j))})`).join(' · ')}</p>` : ''}
     <div class="row" style="margin-bottom:6px"><h4>Tagihan belum lunas</h4><div class="spacer"></div>${ar.length ? `<button class="btn sm ghost" onclick="bebaskanForm('${id}')">${ic('ban')} Bebaskan semua tunggakan</button>` : ''}</div>
     ${ar.length || jual.some(j => !j.batal && jualSt(j).sisa) ? `<div class="table-wrap"><table class="t"><tbody>${ar.map(b => `<tr class="unpaid"><td>SPP ${esc(progById(b.pid).nama)} — ${fmtPeriod(b.p)}</td><td>${billBadge(b.st)}</td><td class="r num"><b>${rp(b.sisa)}</b></td></tr>`).join('')}${jual.filter(j => !j.batal && jualSt(j).sisa).map(j => `<tr class="unpaid"><td>${esc(j.nama)}${j.level ? ' Lv ' + esc(j.level) : ''}</td><td>${jualBadge(jualSt(j).st)}</td><td class="r num"><b>${rp(jualSt(j).sisa)}</b></td></tr>`).join('')}</tbody></table></div>` : '<p class="small muted">Tidak ada tagihan 🎉</p>'}
     <h4 style="margin:16px 0 6px">Riwayat pembayaran</h4>
@@ -1727,10 +1817,10 @@ function jadFilter() {
   return `<select class="input" style="width:auto" onchange="setF('jProg',this.value)"><option value="">Semua program</option>${opt(progs().map(p => [p.id, p.nama]), S.f.jProg)}</select>
   <select class="input" style="width:auto" onchange="setF('jGuru',this.value)"><option value="">Semua guru</option>${opt(D('Guru').filter(g => g.status !== 'Nonaktif').sort(byName).map(g => [g.id, g.nama]), S.f.jGuru)}</select>`;
 }
-const jadList = (all) => D('Jadwal').filter(j => inCab(j.cabang) && (all || j.status !== 'Nonaktif') && (!S.f.jProg || j.programId === S.f.jProg) && (!S.f.jGuru || j.guruId === S.f.jGuru)).sort((a, b) => (a.jamMulai || '').localeCompare(b.jamMulai || ''));
+const jadList = (all) => D('Jadwal').filter(j => inCab(j.cabang) && (all || j.status !== 'Nonaktif') && (!S.f.jProg || j.programId === S.f.jProg) && (!S.f.jGuru || jadHasGuru(j, S.f.jGuru))).sort((a, b) => (a.jamMulai || '').localeCompare(b.jamMulai || ''));
 const sessHtml = j => { const ids = splitList(j.siswaIds); return `<div class="sess ${j.status === 'Nonaktif' ? 'off' : ''}" style="--pc:${progColor(j.programId)}" onclick="formJadwal('${j.id}')">
   <div class="row" style="gap:6px"><span class="time">${esc(j.jamMulai)}–${esc(j.jamSelesai)}</span><div class="spacer"></div>${progChip(j.programId)}</div>
-  <div class="small" style="margin-top:4px"><b>${esc(guruById(j.guruId).nama)}</b>${S.cab ? '' : ' · ' + esc(j.cabang)} · ${ids.length} siswa${j.status === 'Nonaktif' ? ' · <b>nonaktif</b>' : ''}</div>
+  <div class="small" style="margin-top:4px"><b>${esc(guruNames(j))}</b>${S.cab ? '' : ' · ' + esc(j.cabang)} · ${ids.length} siswa${j.status === 'Nonaktif' ? ' · <b>nonaktif</b>' : ''}</div>
   <div class="small muted">${ids.map(x => esc(siswaById(x).panggilan || siswaById(x).nama)).join(', ') || '-'}</div></div>`; };
 function jadMinggu() {
   const all = !!S.f.jAll, list = jadList(all), today = dayName(todayStr());
@@ -1746,7 +1836,7 @@ function jadHari() {
   const peng = abs.filter(a => a.tipe === 'Pengganti' && inCab(a.cabang));
   const groups = cabList().filter(c => inCab(c)).map(c => [c, list.filter(j => j.cabang === c)]);
   return `<div class="card"><div class="card-head"><div class="field"><label>Tanggal</label><input class="input" type="date" value="${date}" onchange="setF('jDate',this.value)"></div><div class="row">${jadFilter()}</div><div class="spacer"></div><b>${hari}, ${fmtDateLong(date)}</b></div>
-  ${groups.map(([c, js]) => `<h4 style="margin:8px 0 6px">${ic('pin').replace('<svg', '<svg style="width:16px;height:16px;vertical-align:-3px"')} ${esc(c)}</h4>${js.length ? js.map(j => { const a = abs.filter(x => x.jadwalId === j.id); return `<div class="li"><div class="avatar" style="background:${progColor(j.programId)}">${esc(j.jamMulai.slice(0, 2))}</div><div class="meta"><b>${esc(j.jamMulai)}–${esc(j.jamSelesai)} · ${esc(progById(j.programId).nama)}</b><span class="small muted">${esc(guruById(j.guruId).nama)} · ${splitList(j.siswaIds).map(x => esc(siswaById(x).panggilan || siswaById(x).nama)).join(', ')}</span></div>${a.length ? `<span class="badge b-green">${a.filter(x => x.status === 'Hadir').length}/${a.length} hadir</span>` : date <= todayStr() ? '<span class="badge b-yellow">Belum diabsen</span>' : ''}<button class="btn sm ghost" onclick="S.tab.abs='input';S.f.absDate='${date}';S.f.absJ='${j.id}';go('absensi')">Absen</button></div>`; }).join('') : '<div class="small muted">Tidak ada sesi</div>'}`).join('')}
+  ${groups.map(([c, js]) => `<h4 style="margin:8px 0 6px">${ic('pin').replace('<svg', '<svg style="width:16px;height:16px;vertical-align:-3px"')} ${esc(c)}</h4>${js.length ? js.map(j => { const a = abs.filter(x => x.jadwalId === j.id); return `<div class="li"><div class="avatar" style="background:${progColor(j.programId)}">${esc(j.jamMulai.slice(0, 2))}</div><div class="meta"><b>${esc(j.jamMulai)}–${esc(j.jamSelesai)} · ${esc(progById(j.programId).nama)}</b><span class="small muted">${esc(guruNames(j))} · ${splitList(j.siswaIds).map(x => esc(siswaById(x).panggilan || siswaById(x).nama)).join(', ')}</span></div>${a.length ? `<span class="badge b-green">${a.filter(x => x.status === 'Hadir').length}/${a.length} hadir</span>` : date <= todayStr() ? '<span class="badge b-yellow">Belum diabsen</span>' : ''}<button class="btn sm ghost" onclick="S.tab.abs='input';S.f.absDate='${date}';S.f.absJ='${j.id}';go('absensi')">Absen</button></div>`; }).join('') : '<div class="small muted">Tidak ada sesi</div>'}`).join('')}
   ${peng.length ? `<h4 style="margin:12px 0 6px">Pertemuan pengganti</h4>${[...new Set(peng.map(a => a.programId + '|' + a.cabang))].map(k => { const [pid, c] = k.split('|'); const r = peng.filter(a => a.programId === pid && a.cabang === c); return `<div class="li"><div class="meta"><b>${esc(progById(pid).nama)} · ${esc(c)}</b><span class="small muted">${r.map(a => esc(siswaById(a.siswaId).nama) + ' (' + a.status + ')').join(', ')}</span></div></div>`; }).join('')}` : ''}
   </div>`;
 }
@@ -1769,27 +1859,29 @@ function jadRekap() {
     <div class="stat bg-yellow"><span class="lbl">Pertemuan pengganti</span><span class="val num">${pengSes}</span><span class="sub">${peng.length} kehadiran siswa</span></div></div>
   <div class="card"><div class="card-head"><select class="input" style="max-width:200px" onchange="setF('jrP',this.value)">${monthOptions(p, 12, 0)}</select><div class="row">${jadFilter()}</div><div class="spacer"></div><button class="btn ghost sm" onclick="exportJadRekap('${p}')">${ic('download')} Excel</button></div>
   <div class="table-wrap"><table class="t"><thead><tr><th>Jadwal</th><th>Guru</th><th class="c">Rencana</th><th class="c">Terlaksana</th><th class="c">Kehadiran siswa</th><th class="c">Tidak hadir</th><th>Belum diabsen</th></tr></thead><tbody>
-  ${rows.map(r => `<tr><td><b>${esc(r.j.hari)} ${esc(r.j.jamMulai)}</b> ${progChip(r.j.programId)}<div class="small muted">${esc(r.j.cabang)}${r.j.status === 'Nonaktif' ? ' · nonaktif' : ''}</div></td><td>${esc(guruById(r.j.guruId).nama)}</td><td class="c num">${r.plan}</td><td class="c num cell-ok">${r.held}</td><td class="c num">${r.hadir}</td><td class="c num ${r.tidak ? 'cell-no' : ''}">${r.tidak}</td><td class="small">${r.miss.map(fmtDate).join(', ') || '-'}</td></tr>`).join('') || '<tr><td colspan="7"><div class="empty">Belum ada jadwal</div></td></tr>'}
+  ${rows.map(r => `<tr><td><b>${esc(r.j.hari)} ${esc(r.j.jamMulai)}</b> ${progChip(r.j.programId)}<div class="small muted">${esc(r.j.cabang)}${r.j.status === 'Nonaktif' ? ' · nonaktif' : ''}</div></td><td>${esc(guruNames(r.j))}</td><td class="c num">${r.plan}</td><td class="c num cell-ok">${r.held}</td><td class="c num">${r.hadir}</td><td class="c num ${r.tidak ? 'cell-no' : ''}">${r.tidak}</td><td class="small">${r.miss.map(fmtDate).join(', ') || '-'}</td></tr>`).join('') || '<tr><td colspan="7"><div class="empty">Belum ada jadwal</div></td></tr>'}
   </tbody></table></div></div>`;
 }
 function exportJadRekap(p) {
   const rows = [['Hari', 'Jam', 'Program', 'Cabang', 'Guru', 'Rencana', 'Terlaksana', 'Tanggal belum diabsen']];
-  jadList(true).forEach(j => { const plan = plannedDates(j, p); const held = [...new Set(D('Absensi').filter(x => x.jadwalId === j.id && x.tanggal.startsWith(p)).map(x => x.tanggal))]; rows.push([j.hari, j.jamMulai + '-' + j.jamSelesai, progById(j.programId).nama, j.cabang, guruById(j.guruId).nama, plan.length, held.length, plan.filter(t => t <= todayStr() && !held.includes(t)).join(' ')]); });
+  jadList(true).forEach(j => { const plan = plannedDates(j, p); const held = [...new Set(D('Absensi').filter(x => x.jadwalId === j.id && x.tanggal.startsWith(p)).map(x => x.tanggal))]; rows.push([j.hari, j.jamMulai + '-' + j.jamSelesai, progById(j.programId).nama, j.cabang, guruNames(j), plan.length, held.length, plan.filter(t => t <= todayStr() && !held.includes(t)).join(' ')]); });
   exportXLSX(`Rekap-Pertemuan-${p}`, [['Rekap', rows]]);
 }
 function formJadwal(id, draft) {
   const j = draft || (id ? { ...D('Jadwal').find(x => x.id === id) } : { hari: 'Senin', jamMulai: '14:00', jamSelesai: '15:00', programId: S.f.jProg || (progAktif()[0] || {}).id, cabang: S.user.cabang || S.cab || cabList()[0], guruId: S.f.jGuru || '', siswaIds: '', status: 'Aktif' });
+  const gsel = guruIdsOf(j);
   const sel = splitList(j.siswaIds), showAll = !!j._all;
   const cand = D('Siswa').filter(s => s.status === 'Aktif' && s.cabang === j.cabang && (showAll || sel.includes(s.id) || spAktif(s.id).some(sp => sp.programId === j.programId))).sort(byName);
-  const gurus = D('Guru').filter(g => g.status !== 'Nonaktif' && (!g.cabang || splitList(g.cabang).includes(j.cabang) || g.id === j.guruId)).sort(byName);
-  window.__jRef = () => { const f = formData($('#fJadwal')); f.siswaIds = $$('#fJadwal input[name=sw]:checked').map(x => x.value).join(','); f._all = $('#jAllSw').checked; delete f.sw; formJadwal(id, Object.assign({}, j, f)); };
+  const gurus = D('Guru').filter(g => g.status !== 'Nonaktif' && (!g.cabang || splitList(g.cabang).includes(j.cabang) || gsel.includes(g.id))).sort((a, b) => (a.jenis === 'MAPEL') - (b.jenis === 'MAPEL') || byName(a, b));
+  window.__jRef = () => { const f = formData($('#fJadwal')); f.siswaIds = $$('#fJadwal input[name=sw]:checked').map(x => x.value).join(','); f.guruId = $$('#fJadwal input[name=gr]:checked').map(x => x.value).join(','); f._all = $('#jAllSw').checked; delete f.sw; delete f.gr; formJadwal(id, Object.assign({}, j, f)); };
   modal(id ? 'Ubah Jadwal' : 'Tambah Jadwal', `<form id="fJadwal" class="form-grid" onsubmit="event.preventDefault();saveJadwal('${id || ''}')">
     <div class="field"><label>Hari</label><select class="input" name="hari">${opt(HARI_LES, j.hari)}</select></div>
     <div class="field"><label>Cabang</label>${S.user.cabang ? `<input type="hidden" name="cabang" value="${esc(S.user.cabang)}"><div class="input">${esc(S.user.cabang)}</div>` : `<select class="input" name="cabang" onchange="__jRef()">${opt(cabList(), j.cabang)}</select>`}</div>
     <div class="field"><label>Jam mulai</label><input class="input" type="time" name="jamMulai" value="${esc(j.jamMulai)}"></div>
     <div class="field"><label>Jam selesai</label><input class="input" type="time" name="jamSelesai" value="${esc(j.jamSelesai)}"></div>
     <div class="field"><label>Program</label><select class="input" name="programId" onchange="__jRef()">${opt(progs().map(p => [p.id, p.nama]), j.programId)}</select></div>
-    <div class="field"><label>Guru</label><select class="input" name="guruId"><option value="">— pilih guru —</option>${opt(gurus.map(g => [g.id, `${g.nama} (${g.jenis || 'AHE'})`]), j.guruId)}</select></div>
+    <div class="field full"><label class="row" style="gap:6px">Guru <span class="muted">(boleh centang lebih dari satu)</span><span class="spacer"></span><button type="button" class="btn sm ghost" onclick="$$('#fJadwal input[name=gr][data-j=AHE]').forEach(x => x.checked = true)">✓ Semua Guru AHE</button><button type="button" class="btn sm ghost" onclick="$$('#fJadwal input[name=gr][data-j=MAPEL]').forEach(x => x.checked = true)">✓ Semua Guru MAPEL</button></label>
+      <div class="picklist">${gurus.map(g => `<label class="check" style="font-weight:600"><input type="checkbox" name="gr" data-j="${g.jenis === 'MAPEL' ? 'MAPEL' : 'AHE'}" value="${g.id}" ${gsel.includes(g.id) ? 'checked' : ''}> ${esc(g.nama)} <span class="badge ${g.jenis === 'MAPEL' ? 'b-orange' : 'b-blue'}" style="font-size:10px">${g.jenis === 'MAPEL' ? 'MAPEL' : 'AHE'}</span></label>`).join('') || '<span class="muted small">Belum ada guru untuk cabang ini.</span>'}</div></div>
     <div class="field full"><label class="row" style="gap:8px">Daftar siswa (${cand.length}) <span class="spacer"></span><span class="check xs" style="font-weight:700"><input type="checkbox" id="jAllSw" ${showAll ? 'checked' : ''} onchange="__jRef()"> tampilkan semua siswa cabang</span></label>
       <div class="picklist">${cand.map(s => `<label class="check" style="font-weight:600"><input type="checkbox" name="sw" value="${s.id}" ${sel.includes(s.id) ? 'checked' : ''}> ${esc(s.nama)} <span class="xs muted">${esc(s.kelas || '')}</span></label>`).join('') || '<span class="muted small">Belum ada siswa aktif yang terdaftar di program ini pada cabang ini.</span>'}</div></div>
     <div class="field"><label>Status</label><select class="input" name="status">${opt(['Aktif', 'Nonaktif'], j.status || 'Aktif')}</select></div>
@@ -1798,9 +1890,10 @@ function formJadwal(id, draft) {
   </form>`, `${id && isOwner() ? `<button class="btn red" style="margin-right:auto" onclick="delJadwal('${id}')">${ic('trash')}</button>` : ''}<button class="btn ghost" onclick="closeModal()">Batal</button><button class="btn" onclick="$('#fJadwal').requestSubmit()">Simpan</button>`, true);
 }
 async function saveJadwal(id) {
-  const f = formData($('#fJadwal')); delete f.sw;
+  const f = formData($('#fJadwal')); delete f.sw; delete f.gr;
   f.siswaIds = $$('#fJadwal input[name=sw]:checked').map(x => x.value).join(',');
-  if (!f.guruId) return toast('Pilih guru', true);
+  f.guruId = $$('#fJadwal input[name=gr]:checked').map(x => x.value).join(',');
+  if (!f.guruId) return toast('Centang minimal satu guru', true);
   try { await saveRow('Jadwal', Object.assign(id ? { id } : {}, f)); closeModal(); toast('Jadwal tersimpan'); renderPage(); } catch (e) { toast(e.message, true); }
 }
 function delJadwal(id) {
@@ -1832,14 +1925,14 @@ function absInput() {
   return `<div class="card">
     <div class="card-head">
       <div class="field"><label>Tanggal</label><input class="input" type="date" value="${date}" onchange="setF('absDate',this.value)"></div>
-      <div class="field" style="flex:1;min-width:220px"><label>Sesi (${hari})</label><select class="input" onchange="setF('absJ',this.value)">${ses.map(j => `<option value="${j.id}" ${jv === j.id ? 'selected' : ''}>${esc(j.jamMulai)} · ${esc(progById(j.programId).nama)} · ${esc(guruById(j.guruId).nama)}${S.cab ? '' : ' · ' + esc(j.cabang)}</option>`).join('')}<option value="pg" ${jv === 'pg' ? 'selected' : ''}>➕ Pertemuan pengganti / di luar jadwal</option></select></div>
+      <div class="field" style="flex:1;min-width:220px"><label>Sesi (${hari})</label>${ses.length ? `<select class="input" onchange="setF('absJ',this.value)">${ses.map(j => `<option value="${j.id}" ${jv === j.id ? 'selected' : ''}>${esc(j.jamMulai)} · ${esc(progById(j.programId).nama)} · ${esc(guruNames(j))}${S.cab ? '' : ' · ' + esc(j.cabang)}</option>`).join('')}<option value="pg" ${jv === 'pg' ? 'selected' : ''}>➕ Pertemuan pengganti / di luar jadwal</option></select>` : `<div class="input" style="background:#F3F6FA">➕ Pertemuan pengganti / di luar jadwal</div>`}</div>
       ${jad ? '' : `<div class="field"><label>Program</label><select class="input" onchange="setF('absPg',this.value)">${opt(progAktif().map(p => [p.id, p.nama]), pid)}</select></div>${S.user.cabang ? '' : `<div class="field"><label>Cabang</label><select class="input" onchange="setF('absCab',this.value)">${opt(cabList(), cab)}</select></div>`}`}
-      <div class="field"><label>Guru</label><select class="input" id="absGuru">${opt(D('Guru').filter(g => g.status !== 'Nonaktif').sort(byName).map(g => [g.id, g.nama]), jad ? jad.guruId : '')}</select></div>
+      <div class="field"><label>Guru yang mengajar</label><select class="input" id="absGuru">${opt(D('Guru').filter(g => g.status !== 'Nonaktif').sort((a, b) => (jad ? !jadHasGuru(jad, a.id) - !jadHasGuru(jad, b.id) : 0) || byName(a, b)).map(g => [g.id, g.nama]), jad ? guruIdsOf(jad)[0] || '' : '')}</select></div>
     </div>
-    ${!jad ? '<div class="note" style="margin-bottom:10px">Pertemuan pengganti dicatat terpisah dari jadwal rutin (tercatat sebagai <b>Pengganti</b> di rekap).</div>' : ''}
-    <div class="row small" style="margin-bottom:6px"><span class="badge b-green">Hadir ${cnt('Hadir')}</span><span class="badge b-blue">Izin ${cnt('Izin')}</span><span class="badge b-orange">Sakit ${cnt('Sakit')}</span><span class="badge b-red">Tanpa ket. ${cnt('Alpa')}</span><div class="spacer"></div><button class="btn sm ghost" onclick="absAll()">✓ Semua Hadir</button></div>
-    <div class="table-wrap"><table class="t"><thead><tr><th>Siswa</th><th>Status</th><th>Keterangan</th></tr></thead><tbody>
-      ${list.map(s => { const d = S.absDraft[s.id] || {}; return `<tr><td><b>${esc(s.nama)}</b><div class="small muted">${esc(s.id)} · ${esc(s.kelas || '')}</div></td>
+    ${!jad ? `<div class="note" style="margin-bottom:10px">${ses.length ? '' : `Tidak ada jadwal rutin hari ${hari}. `}<b>Pertemuan pengganti:</b> pilih <b>Program</b>${S.user.cabang ? '' : ' & <b>Cabang</b>'} di atas, lalu absen siswanya di bawah. Tercatat sebagai <b>Pengganti</b> di rekap.</div>` : ''}
+    <div class="row small" style="margin-bottom:6px"><span class="badge b-green">Hadir ${cnt('Hadir')}</span><span class="badge b-blue">Izin ${cnt('Izin')}</span><span class="badge b-orange">Sakit ${cnt('Sakit')}</span><span class="badge b-red">Tanpa ket. ${cnt('Alpa')}</span><div class="spacer"></div>${qBox('absQ', '#absTb tr[data-q]')}<button class="btn sm ghost" onclick="absAll()">✓ Semua Hadir</button></div>
+    <div class="table-wrap"><table class="t"><thead><tr><th>Siswa</th><th>Status</th><th>Keterangan</th></tr></thead><tbody id="absTb">
+      ${list.map(s => { const d = S.absDraft[s.id] || {}; return `<tr data-q="${esc(qKey(s))}" ${qHit(s, 'absQ') ? '' : 'style="display:none"'}><td><b>${esc(s.nama)}</b>${s.panggilan ? ` <span class="small muted">(${esc(s.panggilan)})</span>` : ''}<div class="small muted">${esc(s.id)} · ${esc(s.kelas || '')}</div></td>
       <td><div class="seg">${Object.entries(ABS).map(([k, v]) => `<button class="${k} ${d.status === v ? 'on' : ''}" title="${absLabel(v)}" onclick="absSet('${s.id}','${v}')">${k}</button>`).join('')}</div></td>
       <td><input class="input" style="min-width:150px;padding:7px 10px" placeholder="opsional" value="${esc(d.catatan || '')}" onchange="(S.absDraft['${s.id}']=S.absDraft['${s.id}']||{}).catatan=this.value"></td></tr>`; }).join('') || '<tr><td colspan="3"><div class="empty">Tidak ada siswa di sesi ini</div></td></tr>'}
     </tbody></table></div>
@@ -1847,7 +1940,7 @@ function absInput() {
   </div>`;
 }
 function absSet(id, v) { S.absDraft[id] = Object.assign(S.absDraft[id] || {}, { status: v }); renderPage(); }
-function absAll() { const [date, jv, pid, cab] = S.absDraft._k.split('|'); const jad = D('Jadwal').find(j => j.id === jv); sesiSiswa({ jadwal: jad, programId: pid, cabang: cab }).forEach(s => { if (!(S.absDraft[s.id] || {}).status) S.absDraft[s.id] = Object.assign(S.absDraft[s.id] || {}, { status: 'Hadir' }); }); renderPage(); }
+function absAll() { const [date, jv, pid, cab] = S.absDraft._k.split('|'); const jad = D('Jadwal').find(j => j.id === jv); sesiSiswa({ jadwal: jad, programId: pid, cabang: cab }).filter(s => qHit(s, 'absQ')).forEach(s => { if (!(S.absDraft[s.id] || {}).status) S.absDraft[s.id] = Object.assign(S.absDraft[s.id] || {}, { status: 'Hadir' }); }); renderPage(); }
 async function absSave() {
   const [date, jv, pid, cab] = S.absDraft._k.split('|'), guruId = ($('#absGuru') || {}).value || '';
   const jad = D('Jadwal').find(j => j.id === jv);
@@ -2042,8 +2135,9 @@ async function saveBayar(sid) {
 function showKuitansi(no) {
   const k = D('Kas').find(x => x.noKuitansi === no); if (!k) return;
   const s = siswaById(k.siswaId);
-  modal('Kuitansi Pembayaran', kuitansiHtml(no), `${S.role === 'admin' ? `<button class="btn ghost" style="margin-right:auto" onclick="batalKuitansi('${no}')">${ic('ban')} Batalkan</button>` : ''}<button class="btn ghost" onclick="printHtml($('#modal .inv').outerHTML,'Kuitansi ${jsq(no)}')">${ic('print')} Cetak / PDF</button>${S.role === 'admin' ? `<button class="btn ghost" onclick="openWa('${s.waOrtu}',kuitansiWa('${no}'))">${ic('wa')} Kirim Teks</button>` : ''}${imgBtn()}`, true);
+  modal('Kuitansi Pembayaran', kuitansiHtml(no), `${S.role === 'admin' ? `<button class="btn ghost" style="margin-right:auto" onclick="batalKuitansi('${no}')">${ic('ban')} Batalkan</button>` : ''}<button class="btn ghost" onclick="printHtml($('#modal .inv').outerHTML,'Kuitansi ${jsq(no)}')">${ic('print')} Cetak / PDF</button>${S.role === 'admin' ? `<button class="btn wa" id="waLinkBtn" title="Langsung ke nomor WA ortu: teks + link kuitansi (PDF)" onclick="openWa('${s.waOrtu}',kuitansiWa('${no}'))">${ic('wa')} Kirim ke WA Ortu</button>` : ''}${imgBtn(S.role === 'admin')}`, true);
   prepImage('Kuitansi-' + s.nama + '-' + no, S.role === 'admin' ? s.waOrtu : S.settings.noWa, S.role === 'admin' ? kuitansiWa(no) : `Kuitansi pembayaran ${s.nama} — ${S.settings.namaLembaga}`);
+  if (S.role === 'admin') kwLinkFetch(no).then(u => { if (u && IMG.name.endsWith(no.replace(/[^\w-]+/g, '-'))) IMG.text = kuitansiWa(no); });
 }
 function showTagihan(sid) {
   const s = siswaById(sid);
@@ -2421,7 +2515,7 @@ function guruHadir() {
   if (!S.gDraft || S.gDraft._date !== date) { S.gDraft = { _date: date }; D('AbsensiGuru').filter(a => a.tanggal === date).forEach(a => S.gDraft[a.guruId] = { ...a }); }
   return `<div class="card"><div class="card-head"><div class="field"><label>Tanggal</label><input class="input" type="date" value="${date}" onchange="setF('gDate',this.value)"></div><div class="spacer"></div><span class="small muted">${hari} · guru juga bisa absen sendiri dari Portal Guru</span></div>
   ${gs.length ? `<div class="table-wrap"><table class="t"><thead><tr><th>Guru</th><th>Status</th><th>Masuk</th><th>Pulang</th><th>Jam</th><th>Cabang</th><th>Catatan</th></tr></thead><tbody>
-  ${gs.map(g => { const d = S.gDraft[g.id] || {}; const ses = D('Jadwal').filter(j => j.hari === hari && j.guruId === g.id && j.status !== 'Nonaktif').length; return `<tr>
+  ${gs.map(g => { const d = S.gDraft[g.id] || {}; const ses = D('Jadwal').filter(j => j.hari === hari && jadHasGuru(j, g.id) && j.status !== 'Nonaktif').length; return `<tr>
     <td><b>${esc(g.nama)}</b><div class="small muted">${ses} sesi terjadwal</div></td>
     <td><div class="seg">${Object.entries(ABS).map(([k, v]) => `<button class="${k} ${d.status === v ? 'on' : ''}" onclick="gSet('${g.id}','status','${v}',true)">${k}</button>`).join('')}</div></td>
     <td><input class="input" type="time" style="padding:7px 9px" value="${esc(d.jamMasuk || '')}" onchange="gSet('${g.id}','jamMasuk',this.value)"></td>
@@ -2449,7 +2543,7 @@ function guruRekap() {
   const p = S.f.gP || thisPeriod();
   const rows = guruCab().map(g => {
     const r = D('AbsensiGuru').filter(a => a.guruId === g.id && a.tanggal.startsWith(p)); const c = k => r.filter(x => x.status === k).length;
-    const jad = D('Jadwal').filter(j => j.guruId === g.id && j.status !== 'Nonaktif');
+    const jad = D('Jadwal').filter(j => jadHasGuru(j, g.id) && j.status !== 'Nonaktif');
     const plan = sum(jad, j => plannedDates(j, p).filter(t => t <= todayStr()).length);
     return { g, H: c('Hadir'), X: r.length - c('Hadir'), jam: sum(r, x => x.jamMengajar), meet: meetKeys(g.id, p).size, plan, sesi: jad.length, siswa: new Set(jad.flatMap(j => splitList(j.siswaIds))).size };
   });
@@ -2468,7 +2562,7 @@ function guruJadwal() {
   const gid = S.f.gjG || '';
   const gs = guruCab().filter(g => g.status !== 'Nonaktif' && (!gid || g.id === gid));
   return `<div class="card" style="padding:12px 18px"><div class="row"><select class="input" style="width:auto" onchange="setF('gjG',this.value)"><option value="">Semua guru</option>${opt(guruCab().map(g => [g.id, g.nama]), gid)}</select><div class="spacer"></div><span class="small muted">Jadwal diatur di menu Jadwal Les</span></div></div>
-  <div class="grid g2">${gs.map(g => { const js = D('Jadwal').filter(j => j.guruId === g.id && j.status !== 'Nonaktif' && inCab(j.cabang)).sort((a, b) => HARI_LES.indexOf(a.hari) - HARI_LES.indexOf(b.hari) || a.jamMulai.localeCompare(b.jamMulai)); return `<div class="card"><div class="card-head"><h3>${esc(g.nama)}</h3><span class="badge ${g.jenis === 'MAPEL' ? 'b-orange' : 'b-blue'}">${esc(g.jenis || 'AHE')}</span><div class="spacer"></div><span class="small muted">${js.length} sesi/minggu</span></div>
+  <div class="grid g2">${gs.map(g => { const js = D('Jadwal').filter(j => jadHasGuru(j, g.id) && j.status !== 'Nonaktif' && inCab(j.cabang)).sort((a, b) => HARI_LES.indexOf(a.hari) - HARI_LES.indexOf(b.hari) || a.jamMulai.localeCompare(b.jamMulai)); return `<div class="card"><div class="card-head"><h3>${esc(g.nama)}</h3><span class="badge ${g.jenis === 'MAPEL' ? 'b-orange' : 'b-blue'}">${esc(g.jenis || 'AHE')}</span><div class="spacer"></div><span class="small muted">${js.length} sesi/minggu</span></div>
     ${js.map(j => `<div class="li"><div class="avatar" style="background:${progColor(j.programId)};font-size:11px">${esc(j.hari.slice(0, 3))}</div><div class="meta"><b>${esc(j.hari)} ${esc(j.jamMulai)}–${esc(j.jamSelesai)} · ${esc(progById(j.programId).nama)}</b><span class="small muted">${esc(j.cabang)} · ${splitList(j.siswaIds).length} siswa</span></div></div>`).join('') || '<div class="empty" style="padding:12px">Belum ada jadwal</div>'}</div>`; }).join('')}</div>`;
 }
 
@@ -2571,7 +2665,7 @@ function lapAuto(sid, pid, p) {
   const r = D('Absensi').filter(a => a.siswaId === sid && a.programId === pid && a.tanggal.startsWith(p));
   const sp = spOf(sid).find(x => x.programId === pid) || {};
   const j = D('Jadwal').find(x => x.programId === pid && splitList(x.siswaIds).includes(sid));
-  return { hadir: String(r.filter(a => a.status === 'Hadir').length), pertemuan: String(r.length), level: sp.level || '', guruId: j ? j.guruId : '' };
+  return { hadir: String(r.filter(a => a.status === 'Hadir').length), pertemuan: String(r.length), level: sp.level || '', guruId: j ? guruIdsOf(j)[0] || '' : '' };
 }
 function belLap() {
   const p = S.f.lapP || addMonths(thisPeriod(), -0), pf = S.f.lapPr || '';
@@ -2871,6 +2965,7 @@ function gSesiOptions(key, date) {
   const hari = dayName(date), ses = D('Jadwal').filter(j => j.hari === hari).sort((a, b) => a.jamMulai.localeCompare(b.jamMulai));
   let cur = S.f[key]; if (!cur || (cur !== 'pg' && cur !== 'mine' && !ses.find(j => j.id === cur))) cur = ses[0] ? ses[0].id : (key === 'gaJ' ? 'pg' : 'mine');
   S.f[key] = cur;
+  if (key === 'gaJ' && !ses.length) return { cur, ses, html: `<div class="input" style="background:#F3F6FA">➕ Pertemuan pengganti / di luar jadwal</div>` };
   return { cur, ses, html: `<select class="input" onchange="S.f['${key}']=this.value;renderGuru()">${ses.map(j => `<option value="${j.id}" ${cur === j.id ? 'selected' : ''}>${esc(j.jamMulai)}–${esc(j.jamSelesai)} · ${esc(progById(j.programId).nama)} · ${esc(j.cabang)}</option>`).join('')}${key === 'gaJ' ? `<option value="pg" ${cur === 'pg' ? 'selected' : ''}>➕ Pertemuan pengganti / di luar jadwal</option>` : `<option value="mine" ${cur === 'mine' ? 'selected' : ''}>Semua siswa yang saya ajar</option>`}</select>` };
 }
 function renderGuru() {
@@ -2910,15 +3005,17 @@ function gTabAbsen() {
     <div class="field"><label>Tanggal</label><input class="input" type="date" value="${date}" max="${todayStr()}" onchange="S.f.gaDate=this.value;renderGuru()"></div>
     <div class="field" style="flex:1;min-width:220px"><label>Sesi</label>${o.html}</div>
     ${jad ? '' : `<div class="field"><label>Program</label><select class="input" onchange="S.f.gaPg=this.value;renderGuru()">${opt(gProgs().map(p => [p.id, p.nama]), pid)}</select></div><div class="field"><label>Cabang</label><select class="input" onchange="S.f.gaCab=this.value;renderGuru()">${opt(gCabs(), cab)}</select></div>`}</div>
-    ${list.map(s => { const d = S.gaDraft[s.id] || {}; return `<div class="li" style="flex-wrap:wrap"><div class="meta" style="min-width:150px"><b>${esc(s.nama)}</b><span class="small muted">${esc(s.kelas || '')} · ${esc(spAktif(s.id).filter(sp => sp.programId === pid).map(sp => 'Lv ' + sp.level).join('') || '')}</span></div>
+    ${jad ? '' : `<div class="note" style="margin-bottom:10px">${o.ses.length ? '' : 'Tidak ada jadwal rutin di tanggal ini. '}<b>Pertemuan pengganti:</b> pilih Program & Cabang di atas, lalu absen siswanya di bawah.</div>`}
+    <div class="row" style="margin-bottom:8px">${qBox('gaQ', '#gaList .li[data-q]').replace('max-width:260px', 'flex:1')}</div>
+    <div id="gaList">${list.map(s => { const d = S.gaDraft[s.id] || {}; return `<div class="li" style="flex-wrap:wrap;${qHit(s, 'gaQ') ? '' : 'display:none'}" data-q="${esc(qKey(s))}"><div class="meta" style="min-width:150px"><b>${esc(s.nama)}${s.panggilan ? ` <span class="small muted" style="font-weight:600">(${esc(s.panggilan)})</span>` : ''}</b><span class="small muted">${esc(s.kelas || '')} · ${esc(spAktif(s.id).filter(sp => sp.programId === pid).map(sp => 'Lv ' + sp.level).join('') || '')}</span></div>
       <div class="seg">${Object.entries(ABS).map(([k, v]) => `<button class="${k} ${d.status === v ? 'on' : ''}" onclick="gaSet('${s.id}','${v}')">${k}</button>`).join('')}</div>
-      <input class="input" style="flex-basis:100%;padding:7px 10px" placeholder="Keterangan (opsional)" value="${esc(d.catatan || '')}" onchange="(S.gaDraft['${s.id}']=S.gaDraft['${s.id}']||{}).catatan=this.value"></div>`; }).join('') || '<div class="empty">Tidak ada siswa di sesi ini.</div>'}
+      <input class="input" style="flex-basis:100%;padding:7px 10px" placeholder="Keterangan (opsional)" value="${esc(d.catatan || '')}" onchange="(S.gaDraft['${s.id}']=S.gaDraft['${s.id}']||{}).catatan=this.value"></div>`; }).join('') || '<div class="empty">Tidak ada siswa di sesi ini.</div>'}</div>
     <div class="row" style="margin-top:14px"><button class="btn ghost" onclick="gaAll()">✓ Semua Hadir</button><div class="spacer"></div><button class="btn" onclick="gaSave()">Simpan Absensi</button></div>
     <p class="small muted" style="margin-top:8px">H = Hadir · I = Izin · S = Sakit · A = Tanpa keterangan${jad ? '' : ' · tercatat sebagai pertemuan pengganti'}</p></div>`;
 }
 function gaSet(id, v) { S.gaDraft[id] = Object.assign(S.gaDraft[id] || {}, { status: v }); renderGuru(); }
 function gaCtx() { const [date, jv, pid, cab] = S.gaDraft._k.split('|'); const jad = D('Jadwal').find(j => j.id === jv); return { date, jad, pid, cab, list: sesiSiswa({ jadwal: jad, programId: pid, cabang: cab }) }; }
-function gaAll() { gaCtx().list.forEach(s => { if (!(S.gaDraft[s.id] || {}).status) S.gaDraft[s.id] = Object.assign(S.gaDraft[s.id] || {}, { status: 'Hadir' }); }); renderGuru(); }
+function gaAll() { gaCtx().list.filter(s => qHit(s, 'gaQ')).forEach(s => { if (!(S.gaDraft[s.id] || {}).status) S.gaDraft[s.id] = Object.assign(S.gaDraft[s.id] || {}, { status: 'Hadir' }); }); renderGuru(); }
 async function gaSave() {
   const c = gaCtx();
   const rows = c.list.filter(s => (S.gaDraft[s.id] || {}).status).map(s => ({ tanggal: c.date, jadwalId: c.jad ? c.jad.id : '', programId: c.pid, siswaId: s.id, status: S.gaDraft[s.id].status, tipe: c.jad ? 'Reguler' : 'Pengganti', catatan: S.gaDraft[s.id].catatan || '' }));
