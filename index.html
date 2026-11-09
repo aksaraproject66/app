@@ -631,6 +631,7 @@ function createApi(DB) {
       const safe = Object.assign({}, g); delete safe.pin; delete safe.tarif; delete safe.tipeTarif;
       return ok({ data: {
         guru: safe, settings: pubSettings(),
+        Guru: T('Guru').map(x => ({ id: x.id, nama: x.nama, jenis: x.jenis, status: x.status })),
         Program: T('Program'),
         Siswa: sc.siswa.map(s => ({ id: s.id, nama: s.nama, panggilan: s.panggilan, jk: s.jk, kelas: s.kelas, cabang: s.cabang, tglLahir: s.tglLahir, status: s.status, ortu: s.ortu, diajar: sc.diajar[s.id] ? '1' : '' })),
         SiswaProgram: T('SiswaProgram').filter(r => sc.ids[r.siswaId]),
@@ -656,7 +657,7 @@ function createApi(DB) {
     if (a === 'guruSaveAbsensi') return ok({ rows: DB.lock(() => {
       const sc = scopeOf(g), ex = T('Absensi');
       const out = (req.rows || []).filter(r => sc.ids[r.siswaId] && /^\d{4}-\d{2}-\d{2}$/.test(r.tanggal) && ABS_STATUS.indexOf(r.status) > -1 && r.programId).map(r => {
-        const e = ex.find(x => x.tanggal === r.tanggal && x.siswaId === r.siswaId && x.programId === r.programId);
+        const e = (r.id && ex.find(x => x.id === r.id && x.guruId === g.id && x.tanggal === r.tanggal && x.siswaId === r.siswaId)) || ex.find(x => x.tanggal === r.tanggal && x.siswaId === r.siswaId && x.programId === r.programId);
         const o = { tanggal: r.tanggal, jadwalId: String(r.jadwalId || ''), programId: String(r.programId), cabang: sc.ids[r.siswaId].cabang, siswaId: r.siswaId, status: r.status, guruId: g.id, tipe: r.tipe === 'Pengganti' ? 'Pengganti' : 'Reguler', catatan: String(r.catatan || '') };
         if (e) o.id = e.id; return o;
       });
@@ -667,7 +668,14 @@ function createApi(DB) {
         .map(t => Object.assign({}, T('AbsensiGuru').find(r => r.guruId === g.id && r.tanggal === t) || { tanggal: t, guruId: g.id, jamMasuk: '', jamKeluar: '', jamMengajar: '', catatan: 'otomatis dari absensi siswa' }, { status: 'Hadir', cabang: tgls[t] }));
       if (ag.length) DB.upsert('AbsensiGuru', ag);
       return saved;
-    }), guruAbsen: T('AbsensiGuru').filter(r => r.guruId === g.id) });
+    }), guruAbsen: T('AbsensiGuru').filter(r => r.guruId === g.id),
+      fresh: (() => { const sc = scopeOf(g), ds = {}; (req.rows || []).forEach(r => ds[r.tanggal] = 1); return T('Absensi').filter(r => ds[r.tanggal] && sc.ids[r.siswaId]); })() });
+    if (a === 'guruDelAbsensi') {
+      const r = T('Absensi').find(x => x.id === String(req.id || ''));
+      if (!r || r.guruId !== g.id) return fail('Absensi ini tidak bisa dihapus (bukan milik Anda).');
+      DB.lock(() => DB.remove('Absensi', r.id));
+      return ok({ id: r.id });
+    }
     if (a === 'guruSaveProgress') return ok({ rows: DB.lock(() => {
       const sc = scopeOf(g), ex = T('Perkembangan');
       const out = (req.rows || []).filter(r => sc.ids[r.siswaId] && String(r.deskripsi || '').trim()).map(r => {
@@ -1222,7 +1230,7 @@ async function startApp() {
     renderAdmin();
   } else if (S.role === 'guru') {
     const r = await call('guruData'); S.g = r.data; S.settings = r.data.settings; S.cab = '';
-    S.db = r.data; S.db.Guru = [r.data.guru];
+    S.db = r.data; S.db.Guru = (r.data.Guru || []).filter(x => x.id !== r.data.guru.id).concat([r.data.guru]);
     renderGuru();
   } else {
     const r = await call('me'); S.me = r.data; S.settings = r.data.settings; S.cab = '';
@@ -3089,7 +3097,7 @@ function renderGuru() {
     ${pHero(g.nama, `<p>${esc(g.id)} · Guru ${esc(g.jenis || 'AHE')} · ${esc(g.cabang || '')}</p><p class="small">${hari}, ${fmtDateLong(today)}</p>`)}
     <div class="grid g2">
       <div class="card"><h3>Absen saya hari ini</h3>${absenBox}</div>
-      ${!D('Jadwal').length ? (ab => `<div class="card"><h3>Anak yang saya absen hari ini (${ab.length})</h3>${ab.slice(0, 8).map(a => `<div class="li"><div class="meta"><b>${esc(siswaById(a.siswaId).nama)}</b><span class="small muted">${esc(progById(a.programId).nama)}</span></div><span class="badge ${absCls[a.status] || 'b-gray'}">${esc(absLabel(a.status))}</span></div>`).join('') || '<div class="empty">Belum ada. Buka tab Absensi Siswa lalu cari nama anak.</div>'}${ab.length > 8 ? `<p class="small muted">+${ab.length - 8} lainnya — lihat Riwayat Absen</p>` : ''}</div>`)(D('Absensi').filter(a => a.tanggal === today && a.guruId === g.id)) : `<div class="card"><h3>Jadwal mengajar hari ini</h3>${jHari.map(j => `<div class="li"><div class="avatar" style="background:${progColor(j.programId)}">${esc(j.jamMulai.slice(0, 2))}</div><div class="meta"><b>${esc(j.jamMulai)}–${esc(j.jamSelesai)} · ${esc(progById(j.programId).nama)}</b><span class="small muted">${esc(j.cabang)} · ${splitList(j.siswaIds).map(id => esc(siswaById(id).panggilan || siswaById(id).nama)).join(', ')}</span></div></div>`).join('') || '<div class="empty" style="padding:12px">Tidak ada jadwal hari ini</div>'}</div>`}
+      ${!D('Jadwal').length ? (ab => `<div class="card"><h3>Hari ini</h3><p style="margin-top:6px">Sudah mengabsen <b>${new Set(ab.map(a => a.siswaId)).size} anak</b>${ab.length ? ` · <a href="javascript:void 0" style="color:var(--pri);font-weight:700" onclick="S.tab.gp='riwayat';renderGuru()">lihat daftar</a>` : ''}</p></div>`)(D('Absensi').filter(a => a.tanggal === today && a.guruId === g.id)) : `<div class="card"><h3>Jadwal mengajar hari ini</h3>${jHari.map(j => `<div class="li"><div class="avatar" style="background:${progColor(j.programId)}">${esc(j.jamMulai.slice(0, 2))}</div><div class="meta"><b>${esc(j.jamMulai)}–${esc(j.jamSelesai)} · ${esc(progById(j.programId).nama)}</b><span class="small muted">${esc(j.cabang)} · ${splitList(j.siswaIds).map(id => esc(siswaById(id).panggilan || siswaById(id).nama)).join(', ')}</span></div></div>`).join('') || '<div class="empty" style="padding:12px">Tidak ada jadwal hari ini</div>'}</div>`}
     </div>
     <div class="row">${tabs('gp', [['absen', 'Absensi Siswa'], ['harian', 'Catatan Perkembangan'], ['lap', 'Laporan Belajar'], ['jadwal', D('Jadwal').length ? 'Jadwal & Siswa' : 'Siswa Saya'], ['riwayat', 'Riwayat Absen']], 'absen', 'renderGuru()')}</div>
     ${body}
@@ -3106,59 +3114,63 @@ const KAT = ['AHE', 'MAPEL', 'SMP'];
 const gKatDefault = () => S.g.guru.jenis === 'MAPEL' ? 'MAPEL' : 'AHE';
 const spKat = (sid, kat) => spAktif(sid).filter(sp => progKat(sp.programId) === kat);
 function gaCand(kat) { const cab = S.f.gaCab || ''; return D('Siswa').filter(s => s.status === 'Aktif' && (!cab || s.cabang === cab) && spKat(s.id, kat).length).sort(byName); }
-function gTabAbsen() {
-  const date = S.f.gaDate || todayStr(), kat = S.f.gaK || gKatDefault(), cabs = gCabs(), key = date + '|' + kat;
-  if (!S.gaDraft || S.gaDraft._k !== key) {
-    S.gaDraft = { _k: key, _list: [] };
-    D('Absensi').filter(a => a.tanggal === date && progKat(a.programId) === kat).sort((x, y) => String(y.updated_at || y.id).localeCompare(String(x.updated_at || x.id))).forEach(a => {
-      if (S.gaDraft[a.siswaId]) return;
-      S.gaDraft[a.siswaId] = { status: a.status, catatan: a.catatan || '', pid: a.programId, orig: a.status + '|' + (a.catatan || '') + '|' + a.programId, guru: a.guruId };
-      S.gaDraft._list.push(a.siswaId);
-    });
-  }
-  const list = S.gaDraft._list.map(siswaById), changed = list.filter(s => gaChanged(s.id)).length;
-  return `<div class="card"><div class="card-head" style="flex-wrap:wrap">
-    <div class="field"><label>Tanggal</label><input class="input" type="date" value="${date}" max="${todayStr()}" onchange="S.f.gaDate=this.value;renderGuru()"></div>
-    <div class="field"><label>Program</label><div class="chips">${KAT.map(k => `<button class="chip ${kat === k ? 'on' : ''}" onclick="S.f.gaK='${k}';renderGuru()">${k}</button>`).join('')}</div></div>
-    ${cabs.length > 1 ? `<div class="field"><label>Cabang</label><select class="input" onchange="S.f.gaCab=this.value;renderGuru()"><option value="">Semua cabang</option>${opt(cabs, S.f.gaCab || '')}</select></div>` : ''}</div>
-    <div class="field" style="margin-bottom:6px"><label>Cari nama anak</label><input class="input" type="search" id="gaCari" autocomplete="off" placeholder="Ketik nama / panggilan anak ${kat}…" oninput="gaCari(this.value)"></div>
-    <div id="gaHasil"></div>
-    <h4 style="margin:14px 0 6px">Daftar absen ${kat} — ${fmtDate(date)} (${list.length} anak)</h4>
-    <div id="gaList">${list.map(s => { const d = S.gaDraft[s.id] || {}, sps = spKat(s.id, kat); return `<div class="li" style="flex-wrap:wrap"><div class="meta" style="min-width:150px"><b>${esc(s.nama)}${s.panggilan ? ` <span class="small muted" style="font-weight:600">(${esc(s.panggilan)})</span>` : ''}</b><span class="small muted">${esc(s.kelas || '')} · ${esc(s.cabang)}${d.orig ? (d.guru && d.guru !== S.g.guru.id ? ' · diabsen guru lain' : ' · tersimpan') : ' · <b style="color:var(--orange)">belum disimpan</b>'}</span></div>
-      ${sps.length > 1 || (d.pid && !sps.some(sp => sp.programId === d.pid)) ? `<select class="input sm" style="width:auto" onchange="S.gaDraft['${s.id}'].pid=this.value;gaBar()">${opt((sps.some(sp => sp.programId === d.pid) || !d.pid ? sps.map(sp => [sp.programId, progLabel(sp)]) : sps.map(sp => [sp.programId, progLabel(sp)]).concat([[d.pid, progById(d.pid).nama]])), d.pid)}</select>` : `<span class="small">${progChip(d.pid || (sps[0] || {}).programId)}</span>`}
-      <div class="seg">${Object.entries(ABS).map(([k, v]) => `<button class="${k} ${d.status === v ? 'on' : ''}" onclick="gaSet('${s.id}','${v}')">${k}</button>`).join('')}</div>
-      ${d.orig ? '' : `<button class="icon-btn" title="Hapus dari daftar" onclick="gaDrop('${s.id}')">${ic('x')}</button>`}
-      <input class="input" style="flex-basis:100%;padding:7px 10px" placeholder="Keterangan (opsional)" value="${esc(d.catatan || '')}" onchange="S.gaDraft['${s.id}'].catatan=this.value;gaBar()"></div>`; }).join('') || `<div class="empty">Belum ada anak di daftar. Cari nama anak di atas lalu tekan <b>H</b> (hadir).</div>`}</div>
-    <div class="row" style="margin-top:14px"><div class="spacer"></div><button class="btn" id="gaSaveBtn" onclick="gaSave()" ${changed ? '' : 'disabled'}>Simpan Absensi${changed ? ` (${changed})` : ''}</button></div>
-    <p class="small muted" style="margin-top:8px">H = Hadir · I = Izin · S = Sakit · A = Tanpa keterangan · Program AHE = semua program selain MAPEL & SMP.</p></div>`;
+const gMe = () => S.g.guru.id;
+const gaRowOf = (sid, date, kat) => D('Absensi').filter(a => a.tanggal === date && a.siswaId === sid && progKat(a.programId) === kat).sort((x, y) => (x.guruId === gMe() ? -1 : 0) - (y.guruId === gMe() ? -1 : 0))[0];
+function gTabAbsen() { return `<div class="card" id="gaWrap">${gaInner()}</div>`; }
+function gaInner() {
+  const date = S.f.gaDate || todayStr(), kat = S.f.gaK || gKatDefault(), cabs = gCabs();
+  const mine = D('Absensi').filter(a => a.tanggal === date && a.guruId === gMe() && progKat(a.programId) === kat).sort((x, y) => String(y.updated_at || '').localeCompare(String(x.updated_at || '')) || byName(siswaById(x.siswaId), siswaById(y.siswaId)));
+  return `<div class="card-head" style="flex-wrap:wrap">
+    <div class="field"><label>Tanggal</label><input class="input" type="date" value="${date}" max="${todayStr()}" onchange="S.f.gaDate=this.value;gaRefresh()"></div>
+    <div class="field"><label>Program</label><div class="chips">${KAT.map(k => `<button class="chip ${kat === k ? 'on' : ''}" onclick="S.f.gaK='${k}';gaRefresh()">${k}</button>`).join('')}</div></div>
+    ${cabs.length > 1 ? `<div class="field"><label>Cabang</label><select class="input" onchange="S.f.gaCab=this.value;gaRefresh()"><option value="">Semua cabang</option>${opt(cabs, S.f.gaCab || '')}</select></div>` : ''}</div>
+    <div class="field" style="margin-bottom:6px"><label>Cari nama anak — tekan H / I / S / A, langsung tersimpan</label><input class="input" type="search" id="gaCari" autocomplete="off" placeholder="Ketik nama / panggilan anak ${kat}…" value="${esc(S.f.gaQ || '')}" oninput="gaCari(this.value)"></div>
+    <div id="gaHasil">${gaHasil()}</div>
+    <h4 style="margin:14px 0 6px">Sudah saya absen — ${kat} · ${fmtDate(date)} (${mine.length} anak)</h4>
+    <div id="gaList">${mine.map(a => { const s = siswaById(a.siswaId), sps = spKat(s.id, kat); return `<div class="li" style="flex-wrap:wrap"><div class="meta" style="min-width:150px"><b>${esc(s.nama)}${s.panggilan ? ` <span class="small muted" style="font-weight:600">(${esc(s.panggilan)})</span>` : ''}</b><span class="small muted">${esc(s.kelas || '')} · ${esc(s.cabang)}</span></div>
+      ${sps.length > 1 ? `<select class="input sm" style="width:auto" onchange="gaTap('${s.id}','${a.status}',this.value)">${opt(sps.map(sp => [sp.programId, progLabel(sp)]).concat(sps.some(sp => sp.programId === a.programId) ? [] : [[a.programId, progById(a.programId).nama]]), a.programId)}</select>` : `<span class="small">${progChip(a.programId)}</span>`}
+      <div class="seg">${Object.entries(ABS).map(([k, v]) => `<button class="${k} ${a.status === v ? 'on' : ''}" onclick="gaTap('${s.id}','${v}')">${k}</button>`).join('')}</div>
+      <button class="icon-btn" title="Hapus absen ini" onclick="gaDel('${a.id}')">${ic('trash')}</button>
+      <input class="input" style="flex-basis:100%;padding:7px 10px" placeholder="Keterangan (opsional)" value="${esc(a.catatan || '')}" onchange="gaTap('${s.id}','${a.status}','',this.value)"></div>`; }).join('') || `<div class="empty">Belum ada. Cari nama anak di atas lalu tekan <b>H</b> (hadir).</div>`}</div>
+    <p class="small muted" style="margin-top:8px">H = Hadir · I = Izin · S = Sakit · A = Tanpa keterangan · Program AHE = semua program selain MAPEL & SMP.</p>`;
 }
-function gaCari(q) {
-  q = q.toLowerCase().trim(); const box = $('#gaHasil'); if (!box) return;
-  if (!q) { box.innerHTML = ''; return; }
-  const kat = S.f.gaK || gKatDefault(), hits = gaCand(kat).filter(s => qKey(s).includes(q)).slice(0, 10);
-  box.innerHTML = hits.map(s => { const d = S.gaDraft[s.id]; return `<div class="li" style="flex-wrap:wrap;background:#F6F9FD;border-radius:10px;padding:8px 10px;margin-bottom:6px"><div class="meta" style="min-width:150px"><b>${esc(s.nama)}${s.panggilan ? ` <span class="small muted" style="font-weight:600">(${esc(s.panggilan)})</span>` : ''}</b><span class="small muted">${esc(s.kelas || '')} · ${esc(s.cabang)} · ${spKat(s.id, kat).map(progLabel).map(esc).join(', ')}</span></div>
-    ${d && d.status ? `<span class="badge ${absCls[d.status]}">${esc(absLabel(d.status))} ✓</span>` : `<div class="seg">${Object.entries(ABS).map(([k, v]) => `<button class="${k}" onclick="gaPick('${s.id}','${v}')">${k}</button>`).join('')}</div>`}</div>`; }).join('') || `<div class="small muted" style="padding:6px 2px">Tidak ditemukan anak ${kat} aktif dengan nama itu.</div>`;
+function gaHasil() {
+  const q = String(S.f.gaQ || '').toLowerCase().trim(); if (!q) return '';
+  const date = S.f.gaDate || todayStr(), kat = S.f.gaK || gKatDefault();
+  const hits = gaCand(kat).filter(s => qKey(s).includes(q)).slice(0, 10);
+  return hits.map(s => { const a = gaRowOf(s.id, date, kat), other = a && a.guruId !== gMe();
+    return `<div class="li" style="flex-wrap:wrap;background:#F6F9FD;border-radius:10px;padding:8px 10px;margin-bottom:6px"><div class="meta" style="min-width:150px"><b>${esc(s.nama)}${s.panggilan ? ` <span class="small muted" style="font-weight:600">(${esc(s.panggilan)})</span>` : ''}</b><span class="small muted">${esc(s.kelas || '')} · ${esc(s.cabang)} · ${spKat(s.id, kat).map(progLabel).map(esc).join(', ')}</span></div>
+    ${other ? `<span class="badge b-gray" style="white-space:normal">Sudah diabsen ${esc((D('Guru').find(g => g.id === a.guruId) || {}).nama || 'guru lain')} · ${esc(absLabel(a.status))}</span>`
+      : `<div class="seg">${Object.entries(ABS).map(([k, v]) => `<button class="${k} ${a && a.status === v ? 'on' : ''}" onclick="gaTap('${s.id}','${v}')">${k}</button>`).join('')}</div>`}</div>`; }).join('') || `<div class="small muted" style="padding:6px 2px">Tidak ditemukan anak ${kat} aktif dengan nama itu.</div>`;
 }
-function gaPick(sid, v) {
-  const kat = S.f.gaK || gKatDefault();
-  if (!S.gaDraft[sid]) { S.gaDraft[sid] = { status: v, catatan: '', pid: (spKat(sid, kat)[0] || {}).programId }; S.gaDraft._list.unshift(sid); } else S.gaDraft[sid].status = v;
-  renderGuru(); const i = $('#gaCari'); if (i) { i.focus(); }
-  toast(`${siswaById(sid).nama}: ${absLabel(v)} — tekan Simpan Absensi`);
+function gaCari(q) { S.f.gaQ = q; const box = $('#gaHasil'); if (box) box.innerHTML = gaHasil(); }
+function gaRefresh() {
+  const w = $('#gaWrap'); if (!w) return renderGuru();
+  const had = document.activeElement && document.activeElement.id === 'gaCari';
+  w.innerHTML = gaInner();
+  if (had) { const i = $('#gaCari'); i.focus(); const n = i.value.length; try { i.setSelectionRange(n, n); } catch (e) {} }
 }
-const gaChanged = sid => { const d = S.gaDraft[sid] || {}; return d.status && (d.status + '|' + (d.catatan || '') + '|' + d.pid) !== d.orig; };
-function gaBar() { const b = $('#gaSaveBtn'); if (!b) return; const n = S.gaDraft._list.filter(gaChanged).length; b.disabled = !n; b.textContent = 'Simpan Absensi' + (n ? ` (${n})` : ''); }
-function gaDrop(sid) { delete S.gaDraft[sid]; S.gaDraft._list = S.gaDraft._list.filter(x => x !== sid); renderGuru(); }
-function gaSet(id, v) { S.gaDraft[id] = Object.assign(S.gaDraft[id] || {}, { status: v }); renderGuru(); }
-async function gaSave() {
-  const date = S.gaDraft._k.split('|')[0];
-  const rows = S.gaDraft._list.filter(gaChanged).map(sid => { const d = S.gaDraft[sid]; return { tanggal: date, jadwalId: '', programId: d.pid, siswaId: sid, status: d.status, tipe: 'Reguler', catatan: d.catatan || '' }; }).filter(r => r.programId);
-  if (!rows.length) return toast('Tidak ada perubahan', true);
+let gaBusy = false;
+async function gaTap(sid, v, pid, catatan) {
+  if (gaBusy) return; gaBusy = true;
+  const date = S.f.gaDate || todayStr(), kat = S.f.gaK || gKatDefault(), a = gaRowOf(sid, date, kat);
+  const mine = a && a.guruId === gMe() ? a : null;
+  const row = { id: mine ? mine.id : '', tanggal: date, jadwalId: '', programId: pid || (mine && mine.programId) || (spKat(sid, kat)[0] || {}).programId, siswaId: sid, status: v, tipe: 'Reguler', catatan: catatan !== undefined ? catatan : (mine ? mine.catatan || '' : '') };
+  if (!row.programId) { gaBusy = false; return toast('Anak ini tidak punya program ' + kat + ' aktif', true); }
   try {
-    const r = await call('guruSaveAbsensi', { rows }); replaceRows('Absensi', r.rows);
+    const r = await call('guruSaveAbsensi', { rows: [row] });
+    if (r.fresh) { const ds = {}; r.fresh.forEach(x => ds[x.tanggal] = 1); ds[date] = 1; S.db.Absensi = D('Absensi').filter(x => !ds[x.tanggal]).concat(r.fresh); } else replaceRows('Absensi', r.rows);
     if (r.guruAbsen) S.db.AbsensiGuru = r.guruAbsen;
-    r.rows.forEach(a => { const s = D('Siswa').find(x => x.id === a.siswaId); if (s) s.diajar = '1'; const d = S.gaDraft[a.siswaId]; if (d) { d.orig = a.status + '|' + (a.catatan || '') + '|' + a.programId; d.guru = a.guruId; } });
-    toast(`Absensi ${fmtDate(date)} tersimpan (${r.rows.length} anak) ✓ Lanjut isi Catatan Perkembangan`); renderGuru();
+    const s = D('Siswa').find(x => x.id === sid); if (s) s.diajar = '1';
+    toast(`${siswaById(sid).nama}: ${absLabel(v)} ✓ tersimpan`);
   } catch (e) { toast(e.message, true); }
+  gaBusy = false; const y = window.scrollY; renderGuru(); window.scrollTo(0, y);
+}
+async function gaDel(id) {
+  const a = D('Absensi').find(x => x.id === id); if (!a) return;
+  confirmBox(`Hapus absen <b>${esc(siswaById(a.siswaId).nama)}</b> tanggal ${fmtDate(a.tanggal)}?`, async () => {
+    try { await call('guruDelAbsensi', { id }); S.db.Absensi = D('Absensi').filter(x => x.id !== id); toast('Absen dihapus'); const y = window.scrollY; renderGuru(); window.scrollTo(0, y); } catch (e) { toast(e.message, true); }
+  }, 'Hapus');
 }
 function gTabHarian() {
   const date = S.f.gpDate || todayStr(), o = gSesiOptions('gpJ', date), jad = o.ses.find(j => j.id === o.cur);
