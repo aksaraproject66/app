@@ -2651,19 +2651,18 @@ function guruRekap() {
   const p = S.f.gP || thisPeriod();
   const rows = guruCab().map(g => {
     const r = D('AbsensiGuru').filter(a => a.guruId === g.id && a.tanggal.startsWith(p)); const c = k => r.filter(x => x.status === k).length;
-    const jad = D('Jadwal').filter(j => jadHasGuru(j, g.id) && j.status !== 'Nonaktif');
-    const plan = sum(jad, j => plannedDates(j, p).filter(t => t <= todayStr()).length);
-    return { g, H: c('Hadir'), X: r.length - c('Hadir'), jam: sum(r, x => x.jamMengajar), meet: meetKeys(g.id, p).size, plan, sesi: jad.length, siswa: new Set(jad.flatMap(j => splitList(j.siswaIds))).size };
+    const ab = D('Absensi').filter(a => a.guruId === g.id), abP = ab.filter(a => a.tanggal.startsWith(p));
+    return { g, H: c('Hadir'), X: r.length - c('Hadir'), jam: sum(r, x => x.jamMengajar), meet: meetKeys(g.id, p).size, total: meetKeys(g.id, '').size, sejak: ab.map(a => a.tanggal).sort()[0] || '', siswa: new Set(abP.map(a => a.siswaId)).size };
   });
   return `<div class="card"><div class="card-head"><select class="input" style="max-width:200px" onchange="setF('gP',this.value)">${monthOptions(p)}</select><div class="spacer"></div><button class="btn ghost sm" onclick="exportGuru('${p}')">${ic('download')} Excel</button></div>
-  <div class="table-wrap"><table class="t"><thead><tr><th>Guru</th><th class="c">Hari hadir</th><th class="c">Izin/sakit</th><th class="c">Jam mengajar</th><th class="c">Pertemuan terlaksana</th><th class="c">Jadwal s.d. hari ini</th><th class="c">Sesi/minggu</th><th class="c">Siswa</th></tr></thead><tbody>
-  ${rows.map(r => `<tr><td><b>${esc(r.g.nama)}</b><div class="xs muted">${esc(r.g.jenis || 'AHE')} · ${esc(r.g.cabang || '')}</div></td><td class="c num cell-ok">${r.H}</td><td class="c num ${r.X ? 'cell-no' : ''}">${r.X}</td><td class="c num">${r.jam}</td><td class="c num"><b>${r.meet}</b></td><td class="c num">${r.plan}</td><td class="c num">${r.sesi}</td><td class="c num">${r.siswa}</td></tr>`).join('') || '<tr><td colspan="8"><div class="empty">Belum ada data</div></td></tr>'}
-  </tbody></table></div><p class="xs muted" style="margin-top:8px">Pertemuan terlaksana = sesi yang absensi siswanya diisi oleh/atas nama guru tersebut (termasuk pertemuan pengganti).</p></div>`;
+  <div class="table-wrap"><table class="t"><thead><tr><th>Guru</th><th class="c">Hari hadir</th><th class="c">Izin/sakit</th><th class="c">Jam mengajar</th><th class="c">Pertemuan ${esc(fmtPeriod(p))}</th><th class="c">Total pertemuan s.d. hari ini</th><th class="c">Anak diabsen</th></tr></thead><tbody>
+  ${rows.map(r => `<tr><td><b>${esc(r.g.nama)}</b><div class="xs muted">${esc(r.g.jenis || 'AHE')} · ${esc(r.g.cabang || '')}</div></td><td class="c num cell-ok">${r.H}</td><td class="c num ${r.X ? 'cell-no' : ''}">${r.X}</td><td class="c num">${r.jam}</td><td class="c num"><b>${r.meet}</b></td><td class="c num"><b>${r.total}</b>${r.sejak ? `<div class="xs muted">sejak ${fmtDate(r.sejak)}</div>` : ''}</td><td class="c num">${r.siswa}</td></tr>`).join('') || '<tr><td colspan="7"><div class="empty">Belum ada data guru</div></td></tr>'}
+  </tbody></table></div><p class="xs muted" style="margin-top:8px"><b>Pertemuan</b> = 1 program di 1 cabang pada 1 hari yang absensi siswanya diisi guru tersebut (berapa pun jumlah anaknya). Kolom bulan = 1 bulan terpilih s.d. hari ini; <b>Total</b> = sejak absen pertama guru s.d. hari ini. <b>Anak diabsen</b> = jumlah anak berbeda di bulan terpilih.</p></div>`;
 }
 function exportGuru(p) {
   const rows = [['Guru', 'Tanggal', 'Status', 'Masuk', 'Pulang', 'Jam', 'Cabang', 'Catatan']];
   D('AbsensiGuru').filter(a => a.tanggal.startsWith(p)).sort((a, b) => a.tanggal.localeCompare(b.tanggal)).forEach(a => rows.push([guruById(a.guruId).nama, a.tanggal, a.status, a.jamMasuk, a.jamKeluar, a.jamMengajar, a.cabang, a.catatan]));
-  const rk = [['Guru', 'Jenis', 'Hari hadir', 'Jam', 'Pertemuan']]; guruCab().forEach(g => rk.push([g.nama, g.jenis, D('AbsensiGuru').filter(a => a.guruId === g.id && a.tanggal.startsWith(p) && a.status === 'Hadir').length, sum(D('AbsensiGuru').filter(a => a.guruId === g.id && a.tanggal.startsWith(p)), a => a.jamMengajar), meetKeys(g.id, p).size]));
+  const rk = [['Guru', 'Jenis', 'Hari hadir', 'Jam', 'Pertemuan bulan ini', 'Total pertemuan s.d. hari ini']]; guruCab().forEach(g => rk.push([g.nama, g.jenis, D('AbsensiGuru').filter(a => a.guruId === g.id && a.tanggal.startsWith(p) && a.status === 'Hadir').length, sum(D('AbsensiGuru').filter(a => a.guruId === g.id && a.tanggal.startsWith(p)), a => a.jamMengajar), meetKeys(g.id, p).size, meetKeys(g.id, '').size]));
   exportXLSX(`Kehadiran-Guru-${p}`, [['Rekap', rk], ['Kehadiran', rows]]);
 }
 function guruJadwal() {
